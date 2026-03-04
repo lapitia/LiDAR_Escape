@@ -87,3 +87,5 @@ Wróg stalker + liminal space: https://www.curseforge.com/minecraft/mc-mods/wond
 Pasożyty: https://www.roblox.com/games/12411473842/Pressure
 
 https://pressure.fandom.com/wiki/Parasite
+
+Yaremchuk Veranika
