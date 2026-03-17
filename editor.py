@@ -18,8 +18,6 @@ BOX_COLORS = {
 
 
 class MapEditor:
-    """Main class"""
-
     def __init__(self, root):
         """Initialize the editor window, set up variables, build UI, and load default map"""
         self.root = root
@@ -70,7 +68,6 @@ class MapEditor:
         self.load_default_map()
         self.redraw()
 
-    # ui
     def build_ui(self):
         """Create whole GUI"""
         # left side
@@ -162,7 +159,7 @@ class MapEditor:
         # just for comfort of double checking controls
         instructions = (
             "- drawing only walls for now\n"
-            "- floor and celining are generated automatically on save\n"
+            "- floor and ceiling are generated automatically on save\n"
             "- spawn is player's start point\n\n"
             "Mouse:\n"
             "LMB drag = create wall\n"
@@ -205,10 +202,7 @@ class MapEditor:
         self.set_tool("wall")
         self.set_status("Ready")
 
-    # binding controls
     def bind_events(self):
-        """Bind keyboard shortcuts and mouse events"""
-
         # keyboard shortcuts
         self.root.bind("<KeyPress-1>", lambda e: self.set_tool("wall"))
         self.root.bind("<KeyPress-2>", lambda e: self.set_tool("spawn"))
@@ -247,7 +241,6 @@ class MapEditor:
         self.redraw()
 
     def read_settings(self):
-        """Default settings"""
         def get_float(entry, default):
             try:
                 return float(entry.get())
@@ -282,7 +275,6 @@ class MapEditor:
         """Snap a world coordinate to the nearest grid cell"""
         return round(value)
 
-    # drawing
     def draw_grid(self):
         """Draw the background grid based on current zoom and offset"""
         w = self.canvas.winfo_width()
@@ -321,7 +313,7 @@ class MapEditor:
         self.canvas.delete("all")
         self.draw_grid()
 
-        # Draw auto floor/ceiling bounds
+        #draw auto floor/ceiling bounds
         bounds = self.get_auto_bounds()
         if bounds:
             min_x, min_z, max_x, max_z = bounds
@@ -358,7 +350,6 @@ class MapEditor:
                 stipple="gray25"
             )
 
-            # Label each wall
             self.canvas.create_text(
                 (sx1 + sx2) / 2,
                 (sy1 + sy2) / 2,
@@ -366,8 +357,6 @@ class MapEditor:
                 fill="white",
                 font=("Segoe UI", 9, "bold")
             )
-
-        # draw spawn
         spawn_sx, spawn_sy = self.world_to_screen(self.spawn[0], self.spawn[2])
         self.canvas.create_oval(spawn_sx - 7, spawn_sy - 7, spawn_sx + 7, spawn_sy + 7, fill="#ffcc00", outline="white", width=2)
         self.canvas.create_text(spawn_sx + 16, spawn_sy - 12, text="SPAWN", fill="#ffcc00", anchor="w", font=("Segoe UI", 10, "bold"))
@@ -376,7 +365,7 @@ class MapEditor:
         if self.preview_rect:
             self.canvas.tag_raise(self.preview_rect)
 
-    # object selection + INFO
+    # object selection + info
     def canvas_pick_box(self, sx, sy):
         """Return the index of the wall under screen coordinates (sx, sy)"""
         wx, wz = self.screen_to_world(sx, sy)
@@ -387,7 +376,6 @@ class MapEditor:
         return None
 
     def update_selected_info(self):
-        """Update the text widget based on the currently selected wall"""
         self.selected_info.delete("1.0", tk.END)
         if self.selected_index is None:
             self.selected_info.insert(tk.END, "No selection")
@@ -407,7 +395,6 @@ class MapEditor:
 
     # mouse event handlers
     def on_left_down(self, event):
-        """Handle left mouse button press"""
         self.read_settings()
         wx, wz = self.screen_to_world(event.x, event.y)
         wx, wz = self.snap(wx), self.snap(wz)
@@ -446,7 +433,6 @@ class MapEditor:
         )
 
     def detect_drag_mode(self, idx, wx, wz):
-        """Determine whether the user is about to move or resize a selected wall"""
         b = self.boxes[idx]
         margin = 0.25 # tolerance for edge detection
 
@@ -461,7 +447,6 @@ class MapEditor:
         return "move"
 
     def on_left_drag(self, event):
-        """Handle mouse drag with left button"""
         wx, wz = self.screen_to_world(event.x, event.y)
         wx, wz = self.snap(wx), self.snap(wz)
 
@@ -502,7 +487,6 @@ class MapEditor:
             self.redraw()
 
     def on_left_up(self, event):
-        """Handle left button release"""
         wx, wz = self.screen_to_world(event.x, event.y)
         wx, wz = self.snap(wx), self.snap(wz)
 
@@ -636,7 +620,6 @@ class MapEditor:
             self.new_map()
 
     def open_map(self):
-        """Open a file dialog and load selected map"""
         path = filedialog.askopenfilename(
             title="Open map",
             filetypes=[("Text map", "*.txt"), ("All files", "*.*")]
@@ -706,7 +689,6 @@ class MapEditor:
         return [floor, ceiling]
 
     def save_map(self):
-        """Save to the current file"""
         current = self.file_var.get().replace("File: ", "").strip()
         if not current or current == DEFAULT_MAP_FILE and not os.path.isabs(current):
             self.save_map_file(DEFAULT_MAP_FILE)
