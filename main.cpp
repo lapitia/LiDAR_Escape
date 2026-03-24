@@ -301,10 +301,12 @@ public:
     }
 
     // perform a scan: cast a number of rays within a cone (angle in degrees) up to max distance maxDist
-    // for each ray, step along until it hits a solid box
-    // then add a point at the impact location.
+    // for each ray, step along until it hits a box
+    // then add a point at the impact location
     void scan(const Camera& cam, const std::vector<WorldBox>& boxes, int rays, float coneDeg, float maxDist) {
         float coneRad = coneDeg * 3.1415926f / 180.f;
+        float tanCone = std::tan(coneRad * 0.5f);
+
         Vec3 worldUp{0.f, 1.f, 0.f};
         Vec3 right = normalize(cross(cam.front, worldUp));
         // in case front is parallel to worldUp, fallback to a different right
@@ -312,32 +314,62 @@ public:
         Vec3 up = normalize(cross(right, cam.front));
 
         for (int i = 0; i < rays; ++i) {
-            // random offsets within the cone
-            float offsetX = ((float)std::rand() / (float)RAND_MAX - 0.5f) * coneRad;
-            float offsetY = ((float)std::rand() / (float)RAND_MAX - 0.5f) * coneRad;
+            // random sample inside a circular cone footprint
+            // using sqrt(u) to prevent forming a biased ring pattern
+            float u1 = (float)std::rand() / (float)RAND_MAX;
+            float u2 = (float)std::rand() / (float)RAND_MAX;
+
+            float r = std::sqrt(u1) * tanCone;
+            float a = 2.f * 3.1415926f * u2;
+
+            float offsetX = std::cos(a) * r;
+            float offsetY = std::sin(a) * r;
 
             // direction is cam.front plus some offsets
             Vec3 dir = normalize(cam.front + right * offsetX + up * offsetY);
 
             // step along the ray (starting a little away from the camera)
-            float t = 0.18f;
+            const float stepSize = 0.08f;
+            float t = 0.18f + ((float)std::rand() / (float)RAND_MAX) * stepSize;
+            float prevT = t;
+
             while (t <= maxDist) {
                 Vec3 p = cam.pos + dir * t;
-                // check against every solid box
+                // check against every active box
                 for (const auto& wb : boxes) {
                     if (!wb.box.active) continue;
+
                     if (sphereAABB(p, 0.08f, wb.box)) {
-                        addPoint(p, 2.1f);
+                        //found a hit
+                        // refine the hit distance between the previous step and current
+                        float lo = prevT;
+                        float hi = t;
+
+                        for (int k = 0; k < 5; ++k) {
+                            float mid = 0.5f * (lo + hi);
+                            Vec3 mp = cam.pos + dir * mid;
+
+                            if (sphereAABB(mp, 0.08f, wb.box)) {
+                                hi = mid;
+                            } else {
+                                lo = mid;
+                            }
+                        }
+
+                        addPoint(cam.pos + dir * hi, 2.1f);
                         goto next_ray;
                     }
                 }
 
-                t += 0.10f;
+                prevT = t;
+                t += stepSize;
             }
 
             next_ray:;
         }
     }
+
+
 
     // render all points as OpenGL points with fading alpha (transparency)
     void render() const {
