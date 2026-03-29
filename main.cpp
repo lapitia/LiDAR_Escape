@@ -278,6 +278,7 @@ struct ScanPoint {
 class PointCloud {
 public:
     std::vector<ScanPoint> points;
+
     // update lifetimes and remove expired points that decayed
     void update(float dt) {
         for (auto it = points.begin(); it != points.end();) {
@@ -434,35 +435,239 @@ static void drawBox(const AABB& b) {
     glEnd();
 }
 
+// shared font used by both the HUD and the menu screens
+// previously a static-local inside renderBatteryHUD; promoted to file scope
+// so a single load serves all callers — ensureFont() is idempotent
+static sf::Font g_font;
+static bool     g_fontLoaded    = false;
+static bool     g_fontAttempted = false;
+
+static void ensureFont() {
+    if (g_fontAttempted) return;
+    g_fontAttempted = true;
+    if (g_font.loadFromFile("rainyhearts.ttf")) {
+        g_fontLoaded = true;
+        std::cout << "Font loaded successfully from rainyhearts.ttf\n";
+    } else {
+        std::cout << "Warning: Could not load rainyhearts.ttf, using rectangle indicator\n";
+    }
+}
+
+// game state enum: controls which screen is active at any given time
+// MainMenu – title screen shown on launch and when the player presses Escape in-game
+// Settings – from MainMenu; lets the player adjust sensitivity and FOV
+// Playing – the actual game loop (3-D scene, scanning, movement)
+enum class GameState { MainMenu, Settings, Playing };
+
+// user-configurable values with small preset arrays
+// cycleSens() and cycleFov() rotate forward through each list on every click
+// the camera is updated with the chosen values when startGame() is called
+struct Settings {
+    int sensitivityIdx = 1; // 0 = Low | 1 = Medium (default) | 2 = High
+    int fovIdx = 2; // maps to: 0=70 | 1=80 | 2=90 | 3=100 | 4=110
+
+    float mouseSens() const {
+        static const float p[] = {0.0015f, 0.0022f, 0.003f};
+        return p[sensitivityIdx];
+    }
+    float fov() const {
+        static const float p[] = {70.f, 80.f, 90.f, 100.f, 110.f};
+        return p[fovIdx];
+    }
+    const char* sensLabel() const {
+        static const char* l[] = {"Low", "Medium", "High"};
+        return l[sensitivityIdx];
+    }
+    const char* fovLabel() const {
+        static const char* l[] = {"70", "80", "90", "100", "110"};
+        return l[fovIdx];
+    }
+    void cycleSens() { sensitivityIdx = (sensitivityIdx + 1) % 3; }
+    void cycleFov()  { fovIdx         = (fovIdx  + 1) % 5; }
+};
+
+// menu rendering helpers
+
+// draws text centred at (cx, cy) using the shared font and returns its global bounds
+// used both to place decorative titles and to position clickable item labels
+static sf::FloatRect drawCenteredText(sf::RenderWindow& window,
+                                      const std::string& str,
+                                      unsigned int charSize,
+                                      float cx, float cy,
+                                      sf::Color color)
+{
+    sf::Text t;
+    t.setFont(g_font);
+    t.setString(str);
+    t.setCharacterSize(charSize);
+    t.setFillColor(color);
+    sf::FloatRect lb = t.getLocalBounds();
+    t.setOrigin(lb.left + lb.width  * 0.5f,
+                lb.top  + lb.height * 0.5f);
+    t.setPosition(cx, cy);
+    window.draw(t);
+    return t.getGlobalBounds();
+}
+
+// used to widen the hit-box around menu text, so small labels are easier to click
+static sf::FloatRect expand(sf::FloatRect r, float dx, float dy) {
+    return {r.left - dx, r.top - dy, r.width + 2.f * dx, r.height + 2.f * dy};
+}
+
+// render the main menu screen: title, subtitle, and three items (Start / Settings / Exit)
+// fills boundsOut with one clickable hit-box per item, indexed in that order
+// the caller checks boundsOut against MouseButtonReleased events to drive transitions
+static void renderMainMenu(sf::RenderWindow& window,
+                           std::vector<sf::FloatRect>& boundsOut)
+{
+    ensureFont();
+    const float W = (float)window.getSize().x;
+    const float H = (float)window.getSize().y;
+    
+    sf::RectangleShape bg(sf::Vector2f(W, H));
+    bg.setFillColor(sf::Color(4, 4, 7));
+    window.draw(bg);
+    
+    sf::RectangleShape rule(sf::Vector2f(W * 0.45f, 1.f));
+    rule.setFillColor(sf::Color(55, 55, 75));
+    rule.setOrigin(W * 0.225f, 0.f);
+    rule.setPosition(W * 0.5f, H * 0.345f);
+    window.draw(rule);
+
+    if (g_fontLoaded) {
+        drawCenteredText(window, "LiDAR Escape", 54,
+                         W * 0.5f, H * 0.21f, sf::Color(228, 228, 235));
+        drawCenteredText(window, "find the exit", 17,
+                         W * 0.5f, H * 0.21f + 58.f, sf::Color(85, 85, 108));
+    }
+
+    static const char* kLabels[] = {"Start", "Settings", "Exit"};
+    constexpr int kCount = 3;
+    boundsOut.resize(kCount);
+
+    const sf::Vector2i mp = sf::Mouse::getPosition(window);
+    const float startY = H * 0.43f;
+    const float step   = 64.f;
+
+    for (int i = 0; i < kCount; ++i) {
+        const float y = startY + (float)i * step;
+
+        if (g_fontLoaded) {
+            sf::Text t;
+            t.setFont(g_font);
+            t.setString(kLabels[i]);
+            t.setCharacterSize(34);
+            sf::FloatRect lb = t.getLocalBounds();
+            t.setOrigin(lb.left + lb.width  * 0.5f,
+                        lb.top  + lb.height * 0.5f);
+            t.setPosition(W * 0.5f, y);
+
+            boundsOut[i] = expand(t.getGlobalBounds(), 24.f, 12.f);
+            const bool hov = boundsOut[i].contains((float)mp.x, (float)mp.y);
+            t.setFillColor(hov ? sf::Color(255, 208, 70) : sf::Color(182, 182, 198));
+            window.draw(t);
+            
+            if (hov) {
+                sf::RectangleShape bar(sf::Vector2f(4.f, 22.f));
+                bar.setFillColor(sf::Color(255, 208, 70, 210));
+                bar.setOrigin(2.f, 11.f);
+                bar.setPosition(W * 0.5f - lb.width * 0.5f - 22.f, y);
+                window.draw(bar);
+            }
+        } else {
+            //fallback
+            sf::RectangleShape btn(sf::Vector2f(200.f, 44.f));
+            btn.setOrigin(100.f, 22.f);
+            btn.setPosition(W * 0.5f, y);
+            boundsOut[i] = btn.getGlobalBounds();
+            const bool hov = boundsOut[i].contains((float)mp.x, (float)mp.y);
+            btn.setFillColor(hov ? sf::Color(70, 55, 10) : sf::Color(25, 25, 35));
+            window.draw(btn);
+        }
+    }
+}
+
+// render the settings screen: Sensitivity / Field of View / Back
+static void renderSettingsMenu(sf::RenderWindow& window,
+                               const Settings& cfg,
+                               std::vector<sf::FloatRect>& boundsOut)
+{
+    ensureFont();
+    const float W = (float)window.getSize().x;
+    const float H = (float)window.getSize().y;
+
+    // full-screen dark background
+    sf::RectangleShape bg(sf::Vector2f(W, H));
+    bg.setFillColor(sf::Color(4, 4, 7));
+    window.draw(bg);
+
+    if (g_fontLoaded)
+        drawCenteredText(window, "Settings", 48,
+                         W * 0.5f, H * 0.19f, sf::Color(228, 228, 235));
+    
+    const std::string labels[3] = {
+        std::string("Sensitivity:    < ") + cfg.sensLabel() + " >",
+        std::string("Field of View:  < ") + cfg.fovLabel()  + " >",
+        "Back"
+    };
+
+    boundsOut.resize(3);
+    const sf::Vector2i mp = sf::Mouse::getPosition(window);
+    const float startY = H * 0.38f;
+    const float step   = 68.f;
+
+    for (int i = 0; i < 3; ++i) {
+        const float y = startY + (float)i * step;
+
+        if (g_fontLoaded) {
+            sf::Text t;
+            t.setFont(g_font);
+            t.setString(labels[i]);
+            t.setCharacterSize(30);
+            sf::FloatRect lb = t.getLocalBounds();
+            t.setOrigin(lb.left + lb.width  * 0.5f,
+                        lb.top  + lb.height * 0.5f);
+            t.setPosition(W * 0.5f, y);
+
+            boundsOut[i] = expand(t.getGlobalBounds(), 24.f, 12.f);
+            const bool hov = boundsOut[i].contains((float)mp.x, (float)mp.y);
+            t.setFillColor(hov ? sf::Color(255, 208, 70) : sf::Color(182, 182, 198));
+            window.draw(t);
+        } else {
+            // fallback
+            sf::RectangleShape btn(sf::Vector2f(300.f, 44.f));
+            btn.setOrigin(150.f, 22.f);
+            btn.setPosition(W * 0.5f, y);
+            boundsOut[i] = btn.getGlobalBounds();
+            const bool hov = boundsOut[i].contains((float)mp.x, (float)mp.y);
+            btn.setFillColor(hov ? sf::Color(70, 55, 10) : sf::Color(25, 25, 35));
+            window.draw(btn);
+        }
+    }
+
+    // small hint shown below the item list
+    if (g_fontLoaded)
+        drawCenteredText(window, "click a setting to cycle its value", 15,
+                         W * 0.5f, H * 0.76f, sf::Color(60, 60, 82));
+}
+
 // render a simple battery bar plus scan mode status
 static void renderBatteryHUD(sf::RenderWindow& window, float battery, bool areaMode) {
     sf::RectangleShape bg({220.f, 20.f});
     bg.setPosition(12.f, 12.f);
-    bg.setFillColor(sf::Color(30, 10, 10)); // dark red background
+    bg.setFillColor(sf::Color(30, 10, 10));
     window.draw(bg);
 
     sf::RectangleShape fill({220.f * (battery / 100.f), 20.f});
     fill.setPosition(12.f, 12.f);
-    fill.setFillColor(sf::Color(220, 220, 220)); // light gray fill
+    fill.setFillColor(sf::Color(220, 220, 220));
     window.draw(fill);
 
-    static sf::Font font;
-    static bool fontLoaded = false;
-    static bool fontAttempted = false;
+    ensureFont();
 
-    if (!fontAttempted) {
-        fontAttempted = true;
-        if (font.loadFromFile("rainyhearts.ttf")) {
-            fontLoaded = true;
-            std::cout << "Font loaded successfully from rainyhearts.ttf\n";
-        } else {
-            std::cout << "Warning: Could not load rainyhearts.ttf, using rectangle indicator\n";
-        }
-    }
-
-    if (fontLoaded) {
+    if (g_fontLoaded) {
         sf::Text modeText;
-        modeText.setFont(font);
+        modeText.setFont(g_font);
         modeText.setCharacterSize(18);
         modeText.setFillColor(sf::Color::White);
         modeText.setPosition(12.f, 40.f);
@@ -475,7 +680,7 @@ static void renderBatteryHUD(sf::RenderWindow& window, float battery, bool areaM
         window.draw(modeText);
 
         sf::Text batteryText;
-        batteryText.setFont(font);
+        batteryText.setFont(g_font);
         batteryText.setCharacterSize(14);
         batteryText.setFillColor(sf::Color::White);
         batteryText.setPosition(12.f, 65.f);
@@ -515,8 +720,8 @@ int main() {
     );
 
     window.setVerticalSyncEnabled(true); // limit framerate to monitor refresh
-    window.setMouseCursorVisible(false); // hide cursor for first‑person
-    window.setMouseCursorGrabbed(true);  // keep mouse inside window
+    window.setMouseCursorVisible(true);
+    window.setMouseCursorGrabbed(false);
 
     //start with a clear window
     glClearColor(0.f, 0.f, 0.f, 1.f);
@@ -559,12 +764,33 @@ int main() {
 
     bool areaMode = false; // false = local scan, true = area scan
 
+    // current screen: starts on the main menu; transitions to Playing on Start
+    GameState state = GameState::MainMenu;
+
+    // applied to the camera when startGame() runs
+    Settings cfg;
+    std::vector<sf::FloatRect> menuBounds;
+
+    // resets all game-session data
+    auto startGame = [&]() {
+        cam.pos       = map.spawn;
+        cam.mouseSens = cfg.mouseSens();
+        cam.fovY      = cfg.fov();
+        cam.updateFront();
+        battery       = 100.f;
+        localScanHeld = false;
+        cloud.points.clear();
+        state = GameState::Playing;
+        window.setMouseCursorVisible(false);
+        window.setMouseCursorGrabbed(true); // keep mouse inside window
+        sf::Vector2u sz = window.getSize();
+        sf::Mouse::setPosition(sf::Vector2i((int)sz.x / 2, (int)sz.y / 2), window);
+    };
+
     sf::Clock clock;
     sf::Vector2u size = window.getSize();
-    sf::Mouse::setPosition(sf::Vector2i((int)size.x / 2, (int)size.y / 2), window);
 
     while (window.isOpen()) {
-        // Event handling
         sf::Event event{};
         while (window.pollEvent(event)) {
             if (event.type == sf::Event::Closed) {
@@ -576,22 +802,72 @@ int main() {
                 size = window.getSize();
             }
 
-            if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape) {
-                window.close();
+            // main menu events
+            if (state == GameState::MainMenu) {
+                // escape on the main menu exits the application
+                if (event.type == sf::Event::KeyPressed &&
+                    event.key.code == sf::Keyboard::Escape)
+                    window.close();
+
+                if (event.type == sf::Event::MouseButtonReleased &&
+                    event.mouseButton.button == sf::Mouse::Left)
+                {
+                    sf::Vector2i mp(event.mouseButton.x, event.mouseButton.y);
+                    for (int i = 0; i < (int)menuBounds.size(); ++i) {
+                        if (!menuBounds[i].contains((float)mp.x, (float)mp.y)) continue;
+                        if      (i == 0) startGame();
+                        else if (i == 1) state = GameState::Settings;
+                        else if (i == 2) window.close();
+                        break;
+                    }
+                }
             }
 
-            // left mouse button controls the scan
-            if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) {
-                localScanHeld = true;
+            // settings screen events
+            else if (state == GameState::Settings) {
+                // escape on the settings screen goes back to the main menu
+                if (event.type == sf::Event::KeyPressed &&
+                    event.key.code == sf::Keyboard::Escape)
+                    state = GameState::MainMenu;
+
+                if (event.type == sf::Event::MouseButtonReleased &&
+                    event.mouseButton.button == sf::Mouse::Left)
+                {
+                    sf::Vector2i mp(event.mouseButton.x, event.mouseButton.y);
+                    for (int i = 0; i < (int)menuBounds.size(); ++i) {
+                        if (!menuBounds[i].contains((float)mp.x, (float)mp.y)) continue;
+                        if      (i == 0) cfg.cycleSens();
+                        else if (i == 1) cfg.cycleFov();
+                        else if (i == 2) state = GameState::MainMenu;
+                        break;
+                    }
+                }
             }
 
-            if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Left) {
-                localScanHeld = false;
-            }
+            // in-game events
+            else {
+                // escape in-game returns to the main menu without quitting
+                if (event.type == sf::Event::KeyPressed &&
+                    event.key.code == sf::Keyboard::Escape)
+                {
+                    state = GameState::MainMenu;
+                    window.setMouseCursorVisible(true);
+                    window.setMouseCursorGrabbed(false);
+                }
 
-            // press M to toggle local/area scan mode
-            if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::M) {
-                areaMode = !areaMode;
+                // left mouse button controls the scan
+                if (event.type == sf::Event::MouseButtonPressed &&
+                    event.mouseButton.button == sf::Mouse::Left)
+                    localScanHeld = true;
+
+                if (event.type == sf::Event::MouseButtonReleased &&
+                    event.mouseButton.button == sf::Mouse::Left)
+                    localScanHeld = false;
+
+                // press M to toggle local/area scan mode
+                if (event.type == sf::Event::KeyPressed &&
+                    event.key.code == sf::Keyboard::M)
+                    areaMode = !areaMode;
             }
         }
 
@@ -599,93 +875,108 @@ int main() {
         float dt = clock.restart().asSeconds();
         dt = std::min(dt, 0.033f);
 
-        // mouse look: compute mouse movement from window center, update orientation
-        sf::Vector2i center((int)size.x / 2, (int)size.y / 2);
-        sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-        sf::Vector2i delta = mousePos - center;
-        sf::Mouse::setPosition(center, window);
+        // game logic runs only while Playing; menus need no per-frame simulation
+        if (state == GameState::Playing) {
+            // mouse look: compute mouse movement from window center, update orientation
+            sf::Vector2i center((int)size.x / 2, (int)size.y / 2);
+            sf::Vector2i mousePos = sf::Mouse::getPosition(window);
+            sf::Vector2i delta = mousePos - center;
+            sf::Mouse::setPosition(center, window);
 
-        cam.yaw += (float)delta.x * cam.mouseSens;
-        cam.pitch -= (float)delta.y * cam.mouseSens; // subtract because y increases downward
-        cam.pitch = clampf(cam.pitch, -1.50f, 1.50f); // limit to ~±85° to avoid gimbal lock
-        // wiki: Gimbal lock is the loss of one degree of freedom in a multi-dimensional mechanism
-        // at certain alignments of the axes. In a three-dimensional three-gimbal mechanism,
-        // gimbal lock occurs when the axes of two of the gimbals are driven into a parallel configuration,
-        // "locking" the system into rotation in a degenerate two-dimensional space.
+            cam.yaw += (float)delta.x * cam.mouseSens;
+            cam.pitch -= (float)delta.y * cam.mouseSens; // subtract because y increases downward
+            cam.pitch = clampf(cam.pitch, -1.50f, 1.50f); // limit to ~±85° to avoid gimbal lock
+            // wiki: Gimbal lock is the loss of one degree of freedom in a multi-dimensional mechanism
+            // at certain alignments of the axes. In a three-dimensional three-gimbal mechanism,
+            // gimbal lock occurs when the axes of two of the gimbals are driven into a parallel configuration,
+            // "locking" the system into rotation in a degenerate two-dimensional space.
 
-        cam.updateFront();
+            cam.updateFront();
 
-        // movement: compute desired move direction based on keys
-        Vec3 forward = cam.front;
-        forward.y = 0.f; // project onto horizontal plane
-        forward = normalize(forward);
+            // movement: compute desired move direction based on keys
+            Vec3 forward = cam.front;
+            forward.y = 0.f; // project onto horizontal plane
+            forward = normalize(forward);
 
-        Vec3 right = normalize(Vec3{-forward.z, 0.f, forward.x}); // perpendicular horizontal
-        Vec3 move{0.f, 0.f, 0.f};
+            Vec3 right = normalize(Vec3{-forward.z, 0.f, forward.x}); // perpendicular horizontal
+            Vec3 move{0.f, 0.f, 0.f};
 
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::W)) move = move + forward;
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::S)) move = move - forward;
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::A)) move = move - right;
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::D)) move = move + right;
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::W)) move = move + forward;
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::S)) move = move - forward;
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::A)) move = move - right;
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::D)) move = move + right;
 
-        if (lengthVec(move) > 0.001f) {
-            move = normalize(move) * cam.moveSpeed;
-        }
-
-        // apply movement with sliding collision
-        Vec3 deltaMove = move * dt;
-        moveWithSlide(cam.pos, deltaMove, playerRadius, map.boxes);
-        // keep camera Y fixed to spawn height y
-        cam.pos.y = map.spawn.y;
-
-        // scanning and battery management
-        if (localScanHeld && battery > 0.f) {
-            if (areaMode) {
-                // wider and denser scan mode
-                cloud.scan(cam, map.boxes, 150, 120.f, 12.f);
-            } else {
-                // generate 90 rays within a 32° cone, up to 10 units distance
-                cloud.scan(cam, map.boxes, 90, 32.f, 10.f);
+            if (lengthVec(move) > 0.001f) {
+                move = normalize(move) * cam.moveSpeed;
             }
-            battery -= localScanDrain * dt;
-        } else {
-            battery += passiveRecharge * dt;
-        }
 
-        battery = clampf(battery, 0.f, 100.f);
-        cloud.update(dt);
+            // apply movement with sliding collision
+            Vec3 deltaMove = move * dt;
+            moveWithSlide(cam.pos, deltaMove, playerRadius, map.boxes);
+            // keep camera Y fixed to spawn height y
+            cam.pos.y = map.spawn.y;
+
+            // scanning and battery management
+            if (localScanHeld && battery > 0.f) {
+                if (areaMode) {
+                    // wider and denser scan mode
+                    cloud.scan(cam, map.boxes, 150, 120.f, 12.f);
+                } else {
+                    // generate 90 rays within a 32° cone, up to 10 units distance
+                    cloud.scan(cam, map.boxes, 90, 32.f, 10.f);
+                }
+                battery -= localScanDrain * dt;
+            } else {
+                battery += passiveRecharge * dt;
+            }
+
+            battery = clampf(battery, 0.f, 100.f);
+            cloud.update(dt);
+        }
 
         // 3d render
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        // set up camera projection and view matrices
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        gluPerspective(cam.fovY, (double)size.x / (double)size.y, 0.05, 100.0);
+        if (state == GameState::Playing) {
+            // set up camera projection and view matrices
+            glMatrixMode(GL_PROJECTION);
+            glLoadIdentity();
+            gluPerspective(cam.fovY, (double)size.x / (double)size.y, 0.05, 100.0);
 
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
-        gluLookAt(
-            cam.pos.x, cam.pos.y, cam.pos.z,
-            cam.pos.x + cam.front.x, cam.pos.y + cam.front.y, cam.pos.z + cam.front.z,
-            0.0, 1.0, 0.0
-        );
+            glMatrixMode(GL_MODELVIEW);
+            glLoadIdentity();
+            gluLookAt(
+                cam.pos.x, cam.pos.y, cam.pos.z,
+                cam.pos.x + cam.front.x, cam.pos.y + cam.front.y, cam.pos.z + cam.front.z,
+                0.0, 1.0, 0.0
+            );
 
-        // draw all world boxes
-        glEnable(GL_LIGHTING);
-        glColor3f(0.025f, 0.025f, 0.03f); // very dark gray/blue
-        for (const auto& wb : map.boxes) {
-            drawBox(wb.box);
+            // draw all world boxes
+            glEnable(GL_LIGHTING);
+            glColor3f(0.025f, 0.025f, 0.03f); // very dark gray/blue
+            for (const auto& wb : map.boxes) {
+                drawBox(wb.box);
+            }
+
+            // draw the point cloud
+            cloud.render();
+
+            // 2d render
+            // SFML's 2D rendering uses its own OpenGL state; using push and pop to avoid conflicts
+            window.pushGLStates();
+            renderBatteryHUD(window, battery, areaMode);
+            window.popGLStates();
+
+        } else {
+            // 2d menu render (no 3d scene behind it)
+            // SFML's 2D rendering uses its own OpenGL state; using push and pop to avoid conflicts
+            window.pushGLStates();
+            if (state == GameState::MainMenu)
+                renderMainMenu(window, menuBounds);
+            else
+                renderSettingsMenu(window, cfg, menuBounds);
+            window.popGLStates();
         }
-
-        // draw the point cloud
-        cloud.render();
-
-        // 2d render
-        // SFML's 2D rendering uses its own OpenGL state; using push and pop to avoid conflicts
-        window.pushGLStates();
-        renderBatteryHUD(window, battery, areaMode);
-        window.popGLStates();
 
         // swap buffers (display the rendered frame)
         window.display();
