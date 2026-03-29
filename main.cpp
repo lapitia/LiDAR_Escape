@@ -66,11 +66,10 @@ static float clampf(float value, float minValue, float maxValue) {
 struct AABB {
     Vec3 min; // minimum corner (x,y,z)
     Vec3 max; // maximum corner
-    std::string type; // e.g., "wall", "floor", "ceiling"
+    std::string type; // "wall", "floor", "ceiling"
     bool active = true; // can be used to temporarily disable a box
 };
 
-// making boxes have id for the future use
 struct WorldBox {
     AABB box;
     int id = 0;
@@ -94,7 +93,7 @@ public:
         boxes.push_back(wb);
     }
 
-    // build a simple test map when no map file exists.
+    // build a simple test map when no map file exists
     void loadFallbackMap() {
         boxes.clear();
         int id = 0;
@@ -151,7 +150,7 @@ public:
     }
 };
 
-// Camera stores position, orientation and movement parameters
+// camera stores position, orientation and movement parameters
 // updateFront() recalculates the forward vector from orientation
 struct Camera {
     Vec3 pos{0.f, 1.55f, 7.f}; // eye position
@@ -172,7 +171,7 @@ struct Camera {
 };
 
 // collision detection functions
-// treating the player as a sphere (radius = 0.28) to make it easier
+// treating the player as a sphere
 // The world is made of AABBs, so collision is checked via sphere-AABB overlap
 static bool sphereAABB(const Vec3& center, float radius, const AABB& box) {
     // find the closest point on the box to the sphere center
@@ -204,14 +203,14 @@ static bool collidesAt(const Vec3& pos, float radius, const std::vector<WorldBox
 
 // move the sphere from its current position by delta by breaking the movement into small steps
 // for each step try moving in x, then z to allow sliding well along them
-// The player's Y is fixed (no jumping/gravity in this version).
+// The player's y is fixed
 static void moveWithSlide(Vec3& pos, const Vec3& delta, float radius, const std::vector<WorldBox>& boxes) {
     float totalLen = lengthVec(delta);
     if (totalLen <= 0.00001f) return;
     const float maxStep = 0.08f;
     int steps = std::max(1, (int)std::ceil(totalLen / maxStep));
     Vec3 step = delta * (1.0f / (float)steps);
-    // a small offset to prevent getting stuck on a surface.
+    // a small offset to prevent getting stuck on a surface
     const float skin = 0.001f;
 
     for (int i = 0; i < steps; ++i) {
@@ -241,7 +240,7 @@ static void moveWithSlide(Vec3& pos, const Vec3& delta, float radius, const std:
             }
         }
 
-        // then try moving in z direction (same logic)
+        // then try moving in z direction
         if (std::abs(step.z) > 0.00001f) {
             Vec3 tryZ = next;
             tryZ.z += step.z;
@@ -369,8 +368,6 @@ public:
         }
     }
 
-
-
     // render all points as OpenGL points with fading alpha (transparency)
     void render() const {
         glDisable(GL_LIGHTING); // points should not be lit
@@ -437,8 +434,8 @@ static void drawBox(const AABB& b) {
     glEnd();
 }
 
-// render a simple battery bar
-static void renderBatteryHUD(sf::RenderWindow& window, float battery) {
+// render a simple battery bar plus scan mode status
+static void renderBatteryHUD(sf::RenderWindow& window, float battery, bool areaMode) {
     sf::RectangleShape bg({220.f, 20.f});
     bg.setPosition(12.f, 12.f);
     bg.setFillColor(sf::Color(30, 10, 10)); // dark red background
@@ -448,6 +445,56 @@ static void renderBatteryHUD(sf::RenderWindow& window, float battery) {
     fill.setPosition(12.f, 12.f);
     fill.setFillColor(sf::Color(220, 220, 220)); // light gray fill
     window.draw(fill);
+
+    static sf::Font font;
+    static bool fontLoaded = false;
+    static bool fontAttempted = false;
+
+    if (!fontAttempted) {
+        fontAttempted = true;
+        if (font.loadFromFile("rainyhearts.ttf")) {
+            fontLoaded = true;
+            std::cout << "Font loaded successfully from rainyhearts.ttf\n";
+        } else {
+            std::cout << "Warning: Could not load rainyhearts.ttf, using rectangle indicator\n";
+        }
+    }
+
+    if (fontLoaded) {
+        sf::Text modeText;
+        modeText.setFont(font);
+        modeText.setCharacterSize(18);
+        modeText.setFillColor(sf::Color::White);
+        modeText.setPosition(12.f, 40.f);
+
+        if (areaMode)
+            modeText.setString("Scan Mode: AREA (120 deg, 150 rays)");
+        else
+            modeText.setString("Scan Mode: LOCAL (32 deg, 90 rays)");
+
+        window.draw(modeText);
+
+        sf::Text batteryText;
+        batteryText.setFont(font);
+        batteryText.setCharacterSize(14);
+        batteryText.setFillColor(sf::Color::White);
+        batteryText.setPosition(12.f, 65.f);
+
+        char batteryStr[32];
+        sprintf(batteryStr, "Battery: %.0f%%", battery);
+        batteryText.setString(batteryStr);
+        window.draw(batteryText);
+    } else {
+        sf::RectangleShape modeRect({220.f, 18.f});
+        modeRect.setPosition(12.f, 40.f);
+        modeRect.setFillColor(areaMode ? sf::Color(0, 100, 0) : sf::Color(100, 0, 0));
+        window.draw(modeRect);
+
+        sf::RectangleShape batteryRect({220.f, 14.f});
+        batteryRect.setPosition(12.f, 65.f);
+        batteryRect.setFillColor(sf::Color(50, 50, 50));
+        window.draw(batteryRect);
+    }
 }
 
 // sets up window, OpenGL, loads map, runs game loop
@@ -510,6 +557,8 @@ int main() {
     const float localScanDrain = 18.0f; // % per second while scanning
     const float playerRadius = 0.28f; // collision sphere radius
 
+    bool areaMode = false; // false = local scan, true = area scan
+
     sf::Clock clock;
     sf::Vector2u size = window.getSize();
     sf::Mouse::setPosition(sf::Vector2i((int)size.x / 2, (int)size.y / 2), window);
@@ -539,6 +588,11 @@ int main() {
             if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Left) {
                 localScanHeld = false;
             }
+
+            // press M to toggle local/area scan mode
+            if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::M) {
+                areaMode = !areaMode;
+            }
         }
 
         // delta time (cap at 0.033s ≈ 30 fps for now)
@@ -554,10 +608,10 @@ int main() {
         cam.yaw += (float)delta.x * cam.mouseSens;
         cam.pitch -= (float)delta.y * cam.mouseSens; // subtract because y increases downward
         cam.pitch = clampf(cam.pitch, -1.50f, 1.50f); // limit to ~±85° to avoid gimbal lock
-        //wiki: Gimbal lock is the loss of one degree of freedom in a multi-dimensional mechanism
-        //at certain alignments of the axes. In a three-dimensional three-gimbal mechanism,
-        //gimbal lock occurs when the axes of two of the gimbals are driven into a parallel configuration,
-        //"locking" the system into rotation in a degenerate two-dimensional space.
+        // wiki: Gimbal lock is the loss of one degree of freedom in a multi-dimensional mechanism
+        // at certain alignments of the axes. In a three-dimensional three-gimbal mechanism,
+        // gimbal lock occurs when the axes of two of the gimbals are driven into a parallel configuration,
+        // "locking" the system into rotation in a degenerate two-dimensional space.
 
         cam.updateFront();
 
@@ -586,8 +640,13 @@ int main() {
 
         // scanning and battery management
         if (localScanHeld && battery > 0.f) {
-            // generate 90 rays within a 32° cone, up to 10 units distance
-            cloud.scan(cam, map.boxes, 90, 32.f, 10.f);
+            if (areaMode) {
+                // wider and denser scan mode
+                cloud.scan(cam, map.boxes, 150, 120.f, 12.f);
+            } else {
+                // generate 90 rays within a 32° cone, up to 10 units distance
+                cloud.scan(cam, map.boxes, 90, 32.f, 10.f);
+            }
             battery -= localScanDrain * dt;
         } else {
             battery += passiveRecharge * dt;
@@ -625,8 +684,9 @@ int main() {
         // 2d render
         // SFML's 2D rendering uses its own OpenGL state; using push and pop to avoid conflicts
         window.pushGLStates();
-        renderBatteryHUD(window, battery);
+        renderBatteryHUD(window, battery, areaMode);
         window.popGLStates();
+
         // swap buffers (display the rendered frame)
         window.display();
     }
