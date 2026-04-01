@@ -31,4 +31,10 @@ if (WIN32)
         "${SFML_DIR}/../../../bin"
         $<TARGET_FILE_DIR:lidar_escape>
   )
+else()
+  add_custom_command(
+        TARGET lidar_escape POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+                ${CMAKE_SOURCE_DIR}/rainyhearts.ttf
+                ${CMAKE_CURRENT_BINARY_DIR}/rainyhearts.ttf)
 endif()
