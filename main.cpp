@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <ctime>
 #include <cstdlib>
+#include <cstdio>
 
 // basic 3D vector structure and utility functions
 struct Vec3 {
@@ -75,11 +76,38 @@ struct WorldBox {
     int id = 0;
 };
 
+struct Spike {
+    Vec3 pos;
+    bool active = true;
+    float revealTimer = 0.f;
+    float height = 0.72f;
+    float baseRadius = 0.30f;
+};
+
+struct Switch {
+    Vec3 pos;
+    bool activated = false;
+    float revealTimer = 0.f;
+};
+
+struct Door {
+    Vec3 pos;
+    bool open = false;
+    float revealTimer = 0.f;
+    float width = 1.6f;
+    float height = 2.1f;
+    float thickness = 0.22f;
+    char axis = 'x';
+};
+
 // MapLoader: handles loading a map from a text file and provides a fallback (hard‑coded map if the file is missing)
 // one box per line: type minX minY minZ maxX maxY maxZ
 class MapLoader {
 public:
     std::vector<WorldBox> boxes;
+    std::vector<Spike> spikes;
+    std::vector<Switch> switches;
+    std::vector<Door> doors;
     Vec3 spawn{0.f, 1.55f, 7.f}; // default spawn point (eye height ~1.55)
 
     // helper to create a WorldBox
@@ -93,23 +121,51 @@ public:
         boxes.push_back(wb);
     }
 
+    void addSpike(const Vec3& pos) {
+        Spike s;
+        s.pos = pos;
+        s.active = true;
+        s.revealTimer = 0.f;
+        spikes.push_back(s);
+    }
+
+    void addSwitch(const Vec3& pos) {
+        Switch s;
+        s.pos = pos;
+        s.activated = false;
+        s.revealTimer = 0.f;
+        switches.push_back(s);
+    }
+
+    void addDoor(const Vec3& pos, char axis = 'x') {
+        Door d;
+        d.pos = pos;
+        d.open = false;
+        d.revealTimer = 0.f;
+        d.axis = (axis == 'z' || axis == 'Z') ? 'z' : 'x';
+        doors.push_back(d);
+    }
+
     // build a simple test map when no map file exists
     void loadFallbackMap() {
         boxes.clear();
+        spikes.clear();
+        switches.clear();
+        doors.clear();
         int id = 0;
         addBox(id++, "floor",   {-8.f, -0.5f, -18.f}, {8.f, 0.f, 10.f});
-        addBox(id++, "ceiling", {-8.f,  2.15f, -18.f}, {8.f, 2.45f, 10.f});
+        addBox(id++, "ceiling", {-8.f, 2.15f, -18.f}, {8.f, 2.45f, 10.f});
         addBox(id++, "wall", {-8.f, 0.f, -18.f}, {-7.5f, 2.15f, 10.f});
-        addBox(id++, "wall", { 7.5f, 0.f, -18.f}, { 8.f, 2.15f, 10.f});
-        addBox(id++, "wall", {-8.f, 0.f, -18.f}, { 8.f, 2.15f, -17.5f});
-        addBox(id++, "wall", {-8.f, 0.f,  9.5f}, { 8.f, 2.15f, 10.f});
+        addBox(id++, "wall", {7.5f, 0.f, -18.f}, {8.f, 2.15f, 10.f});
+        addBox(id++, "wall", {-8.f, 0.f, -18.f}, {8.f, 2.15f, -17.5f});
+        addBox(id++, "wall", {-8.f, 0.f, 9.5f}, {8.f, 2.15f, 10.f});
         addBox(id++, "wall", {-2.2f, 0.f, -14.f}, {-1.6f, 2.15f, 4.f});
-        addBox(id++, "wall", { 1.6f, 0.f, -14.f}, { 2.2f, 2.15f, 4.f});
+        addBox(id++, "wall", {1.6f, 0.f, -14.f}, {2.2f, 2.15f, 4.f});
         addBox(id++, "wall", {-1.1f, 0.f, -6.0f}, {0.9f, 2.15f, -5.4f});
-        addBox(id++, "wall", {-5.5f, 0.f, 4.f}, {-5.0f, 2.15f, 9.5f});
-        addBox(id++, "wall", { 5.0f, 0.f, 4.f}, { 5.5f, 2.15f, 9.5f});
-        addBox(id++, "wall", {-5.5f, 0.f, 9.0f}, { 5.5f, 2.15f, 9.5f});
 
+        addSpike({0.f, 0.05f, -10.f});
+        addSwitch({-5.f, 0.05f, 6.f});
+        addDoor({0.f, 0.05f, -16.2f}, 'x');
         spawn = {0.f, 1.55f, 7.f};
     }
 
@@ -121,6 +177,9 @@ public:
         }
 
         boxes.clear();
+        spikes.clear();
+        switches.clear();
+        doors.clear();
         std::string line;
         int id = 0;
 
@@ -134,6 +193,30 @@ public:
             if (token == "spawn") {
                 // spawn line: "spawn x y z"
                 iss >> spawn.x >> spawn.y >> spawn.z;
+            } else if (token == "spike") {
+                Spike s;
+                iss >> s.pos.x >> s.pos.y >> s.pos.z;
+                s.active = true;
+                s.revealTimer = 0.f;
+                spikes.push_back(s);
+            } else if (token == "switch") {
+                Switch s;
+                iss >> s.pos.x >> s.pos.y >> s.pos.z;
+                s.activated = false;
+                s.revealTimer = 0.f;
+                switches.push_back(s);
+            } else if (token == "door") {
+                Door d;
+                std::string axisToken;
+                iss >> d.pos.x >> d.pos.y >> d.pos.z;
+                if (iss >> axisToken) {
+                    d.axis = (axisToken == "z" || axisToken == "Z") ? 'z' : 'x';
+                } else {
+                    d.axis = 'x';
+                }
+                d.open = false;
+                d.revealTimer = 0.f;
+                doors.push_back(d);
             } else {
                 // if not spawn, it's a box: "type minX minY minZ maxX maxY maxZ"
                 WorldBox wb;
@@ -183,7 +266,7 @@ static bool sphereAABB(const Vec3& center, float radius, const AABB& box) {
     float dy = center.y - cy;
     float dz = center.z - cz;
 
-    return (dx * dx + dy * dy + dz * dz) < (radius * radius);
+    return dx * dx + dy * dy + dz * dz < radius * radius;
 }
 
 // floor and ceiling are not solid, just visible
@@ -193,12 +276,136 @@ static bool isSolid(const AABB& box) {
 
 // check if player collides with any solid box
 static bool collidesAt(const Vec3& pos, float radius, const std::vector<WorldBox>& boxes) {
+    // check against every active box
     for (const auto& wb : boxes) {
         if (!wb.box.active) continue;
         if (!isSolid(wb.box)) continue;
         if (sphereAABB(pos, radius, wb.box)) return true;
     }
     return false;
+}
+
+static bool pointInsideSpikeVolume(const Vec3& p, const Spike& spike) {
+    const float baseY = spike.pos.y - 0.03f;
+    const float topY = baseY + spike.height;
+    if (p.y < baseY || p.y > topY) return false;
+
+    float t = (p.y - baseY) / std::max(0.0001f, spike.height);
+    float radiusAtY = spike.baseRadius * (1.f - t);
+
+    float dx = p.x - spike.pos.x;
+    float dz = p.z - spike.pos.z;
+    return dx * dx + dz * dz <= radiusAtY * radiusAtY;
+}
+
+static bool collidesWithSpike(const Vec3& pos, float radius, const Spike& spike) {
+    const float baseY = spike.pos.y - 0.03f;
+    const float topY = baseY + spike.height;
+
+    const float footY = pos.y - 1.25f;
+    const float shinY = pos.y - 1.00f;
+    const float kneeY = pos.y - 0.78f;
+
+    const Vec3 samples[] = {
+        {pos.x, footY, pos.z},
+        {pos.x, shinY, pos.z},
+        {pos.x, kneeY, pos.z}
+    };
+
+    for (const Vec3& sample : samples) {
+        if (pointInsideSpikeVolume(sample, spike)) {
+            return true;
+        }
+    }
+
+    float verticalMin = footY - radius;
+    float verticalMax = kneeY + radius;
+    if (verticalMax < baseY || verticalMin > topY) {
+        return false;
+    }
+
+    float dx = pos.x - spike.pos.x;
+    float dz = pos.z - spike.pos.z;
+    float distSq = dx * dx + dz * dz;
+    float hitRadius = spike.baseRadius + radius * 0.85f;
+
+    return distSq <= hitRadius * hitRadius;
+}
+
+static bool collidesWithAnySpike(const Vec3& pos, float radius, const std::vector<Spike>& spikes) {
+    for (const auto& spike : spikes) {
+        if (!spike.active) continue;
+        if (collidesWithSpike(pos, radius, spike)) return true;
+    }
+    return false;
+}
+
+static void updateSpikeReveal(std::vector<Spike>& spikes, float dt) {
+    for (auto& spike : spikes) {
+        if (spike.revealTimer > 0.f) {
+            spike.revealTimer = std::max(0.f, spike.revealTimer - dt);
+        }
+    }
+}
+
+static void updateSwitchReveal(std::vector<Switch>& switches, float dt) {
+    for (auto& sw : switches) {
+        if (sw.revealTimer > 0.f) {
+            sw.revealTimer = std::max(0.f, sw.revealTimer - dt);
+        }
+    }
+}
+
+static void updateDoorReveal(std::vector<Door>& doors, float dt) {
+    for (auto& door : doors) {
+        if (door.revealTimer > 0.f) {
+            door.revealTimer = std::max(0.f, door.revealTimer - dt);
+        }
+    }
+}
+
+static bool pointNearSwitch(const Vec3& p, const Switch& sw) {
+    float dx = p.x - sw.pos.x;
+    float dy = p.y - (sw.pos.y + 0.35f);
+    float dz = p.z - sw.pos.z;
+    return dx * dx + dy * dy + dz * dz <= 0.22f * 0.22f;
+}
+
+static void getDoorHalfExtents(const Door& door, float& halfX, float& halfZ) {
+    if (door.axis == 'z') {
+        halfX = door.thickness * 0.5f + 0.08f;
+        halfZ = door.width * 0.5f;
+    } else {
+        halfX = door.width * 0.5f;
+        halfZ = door.thickness * 0.5f + 0.08f;
+    }
+}
+
+static bool pointNearDoorReveal(const Vec3& p, const Door& door) {
+    float halfX, halfZ;
+    getDoorHalfExtents(door, halfX, halfZ);
+    float minY = door.pos.y;
+    float maxY = door.pos.y + door.height;
+    return p.x >= door.pos.x - halfX && p.x <= door.pos.x + halfX &&
+           p.z >= door.pos.z - halfZ && p.z <= door.pos.z + halfZ &&
+           p.y >= minY && p.y <= maxY;
+}
+
+static bool isNearSwitchInteraction(const Vec3& pos, const Switch& sw) {
+    float dx = pos.x - sw.pos.x;
+    float dz = pos.z - sw.pos.z;
+    float distSq = dx * dx + dz * dz;
+    return distSq <= 1.35f * 1.35f;
+}
+
+static bool isNearOpenDoor(const Vec3& pos, const Door& door) {
+    if (!door.open) return false;
+    float dx = std::fabs(pos.x - door.pos.x);
+    float dz = std::fabs(pos.z - door.pos.z);
+    if (door.axis == 'z') {
+        return dx <= 0.8f && dz <= door.width * 0.5f;
+    }
+    return dx <= door.width * 0.5f && dz <= 0.8f;
 }
 
 // move the sphere from its current position by delta by breaking the movement into small steps
@@ -215,6 +422,7 @@ static void moveWithSlide(Vec3& pos, const Vec3& delta, float radius, const std:
 
     for (int i = 0; i < steps; ++i) {
         Vec3 next = pos;
+
         // try moving in x direction first
         if (std::abs(step.x) > 0.00001f) {
             Vec3 tryX = next;
@@ -225,10 +433,10 @@ static void moveWithSlide(Vec3& pos, const Vec3& delta, float radius, const std:
                 next.x = tryX.x;
             } else {
                 // collision: attempt to move incrementally until we hit the wall, then back off slightly (skin)
-                float sign = (step.x > 0.f) ? 1.f : -1.f;
+                float sign = step.x > 0.f ? 1.f : -1.f;
                 float moved = 0.f;
                 while (std::abs(moved) < std::abs(step.x)) {
-                    float inc = std::min(0.01f, std::abs(step.x - moved));
+                    float inc = std::min(0.01f, std::abs(step.x) - moved);
                     Vec3 tiny = next;
                     tiny.x += sign * inc;
                     if (collidesAt(tiny, radius, boxes)) break;
@@ -248,10 +456,10 @@ static void moveWithSlide(Vec3& pos, const Vec3& delta, float radius, const std:
             if (!collidesAt(tryZ, radius, boxes)) {
                 next.z = tryZ.z;
             } else {
-                float sign = (step.z > 0.f) ? 1.f : -1.f;
+                float sign = step.z > 0.f ? 1.f : -1.f;
                 float moved = 0.f;
                 while (std::abs(moved) < std::abs(step.z)) {
-                    float inc = std::min(0.01f, std::abs(step.z - moved));
+                    float inc = std::min(0.01f, std::abs(step.z) - moved);
                     Vec3 tiny = next;
                     tiny.z += sign * inc;
                     if (collidesAt(tiny, radius, boxes)) break;
@@ -278,7 +486,6 @@ struct ScanPoint {
 class PointCloud {
 public:
     std::vector<ScanPoint> points;
-
     // update lifetimes and remove expired points that decayed
     void update(float dt) {
         for (auto it = points.begin(); it != points.end();) {
@@ -303,7 +510,12 @@ public:
     // perform a scan: cast a number of rays within a cone (angle in degrees) up to max distance maxDist
     // for each ray, step along until it hits a box
     // then add a point at the impact location
-    void scan(const Camera& cam, const std::vector<WorldBox>& boxes, int rays, float coneDeg, float maxDist) {
+    void scan(const Camera& cam,
+              const std::vector<WorldBox>& boxes,
+              std::vector<Spike>& spikes,
+              std::vector<Switch>& switches,
+              std::vector<Door>& doors,
+              int rays, float coneDeg, float maxDist) {
         float coneRad = coneDeg * 3.1415926f / 180.f;
         float tanCone = std::tan(coneRad * 0.5f);
 
@@ -312,6 +524,10 @@ public:
         // in case front is parallel to worldUp, fallback to a different right
         if (lengthVec(right) < 0.0001f) right = {1.f, 0.f, 0.f};
         Vec3 up = normalize(cross(right, cam.front));
+
+        const float spikeRevealLife = 1.35f;
+        const float switchRevealLife = 1.7f;
+        const float doorRevealLife = 1.7f;
 
         for (int i = 0; i < rays; ++i) {
             // random sample inside a circular cone footprint
@@ -324,7 +540,6 @@ public:
 
             float offsetX = std::cos(a) * r;
             float offsetY = std::sin(a) * r;
-
             // direction is cam.front plus some offsets
             Vec3 dir = normalize(cam.front + right * offsetX + up * offsetY);
 
@@ -335,10 +550,32 @@ public:
 
             while (t <= maxDist) {
                 Vec3 p = cam.pos + dir * t;
+
+                for (auto& spike : spikes) {
+                    if (!spike.active) continue;
+                    if (pointInsideSpikeVolume(p, spike)) {
+                        spike.revealTimer = std::max(spike.revealTimer, spikeRevealLife);
+                    }
+                }
+
+                for (auto& sw : switches) {
+                    if (pointNearSwitch(p, sw)) {
+                        sw.revealTimer = std::max(sw.revealTimer, switchRevealLife);
+                    }
+                }
+
+                for (auto& door : doors) {
+                    if (pointNearDoorReveal(p, door)) {
+                        door.revealTimer = std::max(door.revealTimer, doorRevealLife);
+                    }
+                }
+
                 // check against every active box
                 for (const auto& wb : boxes) {
                     if (!wb.box.active) continue;
 
+                    //found a hit
+                    // refine the hit distance between the previous step and current
                     if (sphereAABB(p, 0.08f, wb.box)) {
                         //found a hit
                         // refine the hit distance between the previous step and current
@@ -348,12 +585,8 @@ public:
                         for (int k = 0; k < 5; ++k) {
                             float mid = 0.5f * (lo + hi);
                             Vec3 mp = cam.pos + dir * mid;
-
-                            if (sphereAABB(mp, 0.08f, wb.box)) {
-                                hi = mid;
-                            } else {
-                                lo = mid;
-                            }
+                            if (sphereAABB(mp, 0.08f, wb.box)) hi = mid;
+                            else lo = mid;
                         }
 
                         addPoint(cam.pos + dir * hi, 2.1f);
@@ -435,12 +668,70 @@ static void drawBox(const AABB& b) {
     glEnd();
 }
 
+static void emitConeDots(const Vec3& center, float height, float baseRadius, int rings, int radialSteps, float jitter) {
+    const float baseY = center.y - 0.03f;
+
+    for (int iy = 0; iy <= rings; ++iy) {
+        float t = (float)iy / (float)rings;
+        float y = baseY + t * height;
+        float ringRadius = baseRadius * (1.f - t);
+
+        int steps = std::max(6, radialSteps - iy / 2);
+        for (int ia = 0; ia < steps; ++ia) {
+            float a = (2.f * 3.1415926f * (float)ia) / (float)steps;
+            float wobble = std::sin(a * 3.f + t * 11.f) * jitter;
+            float rr = std::max(0.f, ringRadius + wobble);
+
+            glVertex3f(
+                center.x + std::cos(a) * rr,
+                y,
+                center.z + std::sin(a) * rr
+            );
+        }
+    }
+
+    for (int iy = 0; iy <= rings; ++iy) {
+        float t = (float)iy / (float)rings;
+        float y = baseY + t * height;
+        glVertex3f(center.x, y, center.z);
+    }
+}
+
+static void renderSpikes(const std::vector<Spike>& spikes) {
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glPointSize(3.6f);
+    glBegin(GL_POINTS);
+
+    for (const auto& spike : spikes) {
+        if (!spike.active) continue;
+        if (spike.revealTimer <= 0.f) continue;
+
+        float fade = clampf(spike.revealTimer / 1.35f, 0.f, 1.f);
+        glColor4f(1.0f, 0.12f + 0.10f * fade, 0.12f + 0.10f * fade, 0.45f + 0.55f * fade);
+        emitConeDots(spike.pos, spike.height, spike.baseRadius, 16, 22, 0.008f);
+
+        Vec3 s1{spike.pos.x - 0.17f, spike.pos.y, spike.pos.z + 0.05f};
+        Vec3 s2{spike.pos.x + 0.17f, spike.pos.y, spike.pos.z + 0.03f};
+        Vec3 s3{spike.pos.x + 0.04f, spike.pos.y, spike.pos.z - 0.16f};
+
+        glColor4f(1.0f, 0.10f, 0.10f, 0.35f + 0.45f * fade);
+        emitConeDots(s1, spike.height * 0.72f, spike.baseRadius * 0.62f, 12, 18, 0.007f);
+        emitConeDots(s2, spike.height * 0.68f, spike.baseRadius * 0.58f, 12, 18, 0.007f);
+        emitConeDots(s3, spike.height * 0.55f, spike.baseRadius * 0.48f, 10, 16, 0.006f);
+    }
+
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
 // shared font used by both the HUD and the menu screens
 // previously a static-local inside renderBatteryHUD; promoted to file scope
 // so a single load serves all callers — ensureFont() is idempotent
 static sf::Font g_font;
-static bool     g_fontLoaded    = false;
-static bool     g_fontAttempted = false;
+static bool g_fontLoaded = false;
+static bool g_fontAttempted = false;
 
 static void ensureFont() {
     if (g_fontAttempted) return;
@@ -453,11 +744,7 @@ static void ensureFont() {
     }
 }
 
-// game state enum: controls which screen is active at any given time
-// MainMenu – title screen shown on launch and when the player presses Escape in-game
-// Settings – from MainMenu; lets the player adjust sensitivity and FOV
-// Playing – the actual game loop (3-D scene, scanning, movement)
-enum class GameState { MainMenu, Settings, Playing };
+enum class GameState { MainMenu, Settings, Playing, GameOver };
 
 // user-configurable values with small preset arrays
 // cycleSens() and cycleFov() rotate forward through each list on every click
@@ -483,10 +770,8 @@ struct Settings {
         return l[fovIdx];
     }
     void cycleSens() { sensitivityIdx = (sensitivityIdx + 1) % 3; }
-    void cycleFov()  { fovIdx         = (fovIdx  + 1) % 5; }
+    void cycleFov() { fovIdx = (fovIdx + 1) % 5; }
 };
-
-// menu rendering helpers
 
 // draws text centred at (cx, cy) using the shared font and returns its global bounds
 // used both to place decorative titles and to position clickable item labels
@@ -502,8 +787,7 @@ static sf::FloatRect drawCenteredText(sf::RenderWindow& window,
     t.setCharacterSize(charSize);
     t.setFillColor(color);
     sf::FloatRect lb = t.getLocalBounds();
-    t.setOrigin(lb.left + lb.width  * 0.5f,
-                lb.top  + lb.height * 0.5f);
+    t.setOrigin(lb.left + lb.width * 0.5f, lb.top + lb.height * 0.5f);
     t.setPosition(cx, cy);
     window.draw(t);
     return t.getGlobalBounds();
@@ -523,11 +807,11 @@ static void renderMainMenu(sf::RenderWindow& window,
     ensureFont();
     const float W = (float)window.getSize().x;
     const float H = (float)window.getSize().y;
-    
+
     sf::RectangleShape bg(sf::Vector2f(W, H));
     bg.setFillColor(sf::Color(4, 4, 7));
     window.draw(bg);
-    
+
     sf::RectangleShape rule(sf::Vector2f(W * 0.45f, 1.f));
     rule.setFillColor(sf::Color(55, 55, 75));
     rule.setOrigin(W * 0.225f, 0.f);
@@ -535,10 +819,8 @@ static void renderMainMenu(sf::RenderWindow& window,
     window.draw(rule);
 
     if (g_fontLoaded) {
-        drawCenteredText(window, "LiDAR Escape", 54,
-                         W * 0.5f, H * 0.21f, sf::Color(228, 228, 235));
-        drawCenteredText(window, "find the exit", 17,
-                         W * 0.5f, H * 0.21f + 58.f, sf::Color(85, 85, 108));
+        drawCenteredText(window, "LiDAR Escape", 54, W * 0.5f, H * 0.21f, sf::Color(228, 228, 235));
+        drawCenteredText(window, "find the exit", 17, W * 0.5f, H * 0.21f + 58.f, sf::Color(85, 85, 108));
     }
 
     static const char* kLabels[] = {"Start", "Settings", "Exit"};
@@ -547,7 +829,7 @@ static void renderMainMenu(sf::RenderWindow& window,
 
     const sf::Vector2i mp = sf::Mouse::getPosition(window);
     const float startY = H * 0.43f;
-    const float step   = 64.f;
+    const float step = 64.f;
 
     for (int i = 0; i < kCount; ++i) {
         const float y = startY + (float)i * step;
@@ -558,15 +840,14 @@ static void renderMainMenu(sf::RenderWindow& window,
             t.setString(kLabels[i]);
             t.setCharacterSize(34);
             sf::FloatRect lb = t.getLocalBounds();
-            t.setOrigin(lb.left + lb.width  * 0.5f,
-                        lb.top  + lb.height * 0.5f);
+            t.setOrigin(lb.left + lb.width * 0.5f, lb.top + lb.height * 0.5f);
             t.setPosition(W * 0.5f, y);
 
             boundsOut[i] = expand(t.getGlobalBounds(), 24.f, 12.f);
             const bool hov = boundsOut[i].contains((float)mp.x, (float)mp.y);
             t.setFillColor(hov ? sf::Color(255, 208, 70) : sf::Color(182, 182, 198));
             window.draw(t);
-            
+
             if (hov) {
                 sf::RectangleShape bar(sf::Vector2f(4.f, 22.f));
                 bar.setFillColor(sf::Color(255, 208, 70, 210));
@@ -596,25 +877,23 @@ static void renderSettingsMenu(sf::RenderWindow& window,
     const float W = (float)window.getSize().x;
     const float H = (float)window.getSize().y;
 
-    // full-screen dark background
     sf::RectangleShape bg(sf::Vector2f(W, H));
     bg.setFillColor(sf::Color(4, 4, 7));
     window.draw(bg);
 
     if (g_fontLoaded)
-        drawCenteredText(window, "Settings", 48,
-                         W * 0.5f, H * 0.19f, sf::Color(228, 228, 235));
-    
+        drawCenteredText(window, "Settings", 48, W * 0.5f, H * 0.19f, sf::Color(228, 228, 235));
+
     const std::string labels[3] = {
         std::string("Sensitivity:    < ") + cfg.sensLabel() + " >",
-        std::string("Field of View:  < ") + cfg.fovLabel()  + " >",
+        std::string("Field of View:  < ") + cfg.fovLabel() + " >",
         "Back"
     };
 
     boundsOut.resize(3);
     const sf::Vector2i mp = sf::Mouse::getPosition(window);
     const float startY = H * 0.38f;
-    const float step   = 68.f;
+    const float step = 68.f;
 
     for (int i = 0; i < 3; ++i) {
         const float y = startY + (float)i * step;
@@ -625,8 +904,7 @@ static void renderSettingsMenu(sf::RenderWindow& window,
             t.setString(labels[i]);
             t.setCharacterSize(30);
             sf::FloatRect lb = t.getLocalBounds();
-            t.setOrigin(lb.left + lb.width  * 0.5f,
-                        lb.top  + lb.height * 0.5f);
+            t.setOrigin(lb.left + lb.width * 0.5f, lb.top + lb.height * 0.5f);
             t.setPosition(W * 0.5f, y);
 
             boundsOut[i] = expand(t.getGlobalBounds(), 24.f, 12.f);
@@ -645,20 +923,170 @@ static void renderSettingsMenu(sf::RenderWindow& window,
         }
     }
 
-    // small hint shown below the item list
     if (g_fontLoaded)
-        drawCenteredText(window, "click a setting to cycle its value", 15,
-                         W * 0.5f, H * 0.76f, sf::Color(60, 60, 82));
+        drawCenteredText(window, "click a setting to cycle its value", 15, W * 0.5f, H * 0.76f, sf::Color(60, 60, 82));
 }
 
-// render a simple battery bar plus scan mode status
-static void renderBatteryHUD(sf::RenderWindow& window, float battery, bool areaMode) {
-    sf::RectangleShape bg({220.f, 20.f});
+static void renderGameOverOverlay(sf::RenderWindow& window,
+                                  std::vector<sf::FloatRect>& boundsOut)
+{
+    ensureFont();
+    const float W = (float)window.getSize().x;
+    const float H = (float)window.getSize().y;
+
+    sf::RectangleShape shade(sf::Vector2f(W, H));
+    shade.setFillColor(sf::Color(0, 0, 0, 175));
+    window.draw(shade);
+
+    const float panelW = 520.f;
+    const float panelH = 340.f;
+    const float panelLeft = W * 0.5f - panelW * 0.5f;
+    const float panelTop = H * 0.5f - panelH * 0.5f;
+
+    sf::RectangleShape panel(sf::Vector2f(panelW, panelH));
+    panel.setPosition(panelLeft, panelTop);
+    panel.setFillColor(sf::Color(10, 10, 16, 235));
+    panel.setOutlineThickness(2.f);
+    panel.setOutlineColor(sf::Color(110, 28, 28, 220));
+    window.draw(panel);
+
+    if (g_fontLoaded) {
+        drawCenteredText(window, "Game Over", 44, W * 0.5f, panelTop + 72.f, sf::Color(235, 210, 210));
+        drawCenteredText(window, "You were caught by the spikes", 18, W * 0.5f, panelTop + 126.f, sf::Color(175, 175, 190));
+    }
+
+    boundsOut.resize(2);
+    const sf::Vector2i mp = sf::Mouse::getPosition(window);
+
+    sf::FloatRect restartRect(panelLeft + 130.f, panelTop + 186.f, 260.f, 52.f);
+    sf::FloatRect quitRect(panelLeft + 130.f, panelTop + 252.f, 260.f, 52.f);
+    boundsOut[0] = restartRect;
+    boundsOut[1] = quitRect;
+
+    auto drawButton = [&](const sf::FloatRect& r, const std::string& label, sf::Color base, sf::Color hover) {
+        bool hov = r.contains((float)mp.x, (float)mp.y);
+        sf::RectangleShape btn(sf::Vector2f(r.width, r.height));
+        btn.setPosition(r.left, r.top);
+        btn.setFillColor(hov ? hover : base);
+        btn.setOutlineThickness(2.f);
+        btn.setOutlineColor(hov ? sf::Color(255, 210, 120) : sf::Color(170, 90, 90));
+        window.draw(btn);
+        if (g_fontLoaded) {
+            drawCenteredText(window, label, 26, r.left + r.width * 0.5f, r.top + r.height * 0.5f + 4.f, sf::Color::White);
+        }
+    };
+
+    drawButton(restartRect, "Restart", sf::Color(95, 24, 24, 235), sf::Color(145, 36, 36, 240));
+    drawButton(quitRect, "Quit", sf::Color(48, 48, 60, 235), sf::Color(76, 76, 96, 240));
+}
+
+static void renderSwitches(const std::vector<Switch>& switches) {
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glPointSize(4.0f);
+    glBegin(GL_POINTS);
+
+    for (const auto& sw : switches) {
+        if (sw.revealTimer <= 0.f && !sw.activated) continue;
+        float fade = sw.activated ? 1.f : clampf(sw.revealTimer / 1.7f, 0.f, 1.f);
+        if (sw.activated) glColor4f(0.15f, 1.0f, 0.32f, 0.95f);
+        else glColor4f(0.18f, 0.75f, 1.0f, 0.45f + 0.5f * fade);
+
+        for (int i = 0; i <= 14; ++i) {
+            float y = sw.pos.y + 0.05f + 0.04f * (float)i;
+            glVertex3f(sw.pos.x, y, sw.pos.z);
+            glVertex3f(sw.pos.x + 0.035f, y, sw.pos.z + 0.01f);
+            glVertex3f(sw.pos.x - 0.035f, y, sw.pos.z - 0.01f);
+        }
+
+        for (int i = 0; i < 18; ++i) {
+            float a = 2.f * 3.1415926f * (float)i / 18.f;
+            glVertex3f(sw.pos.x + std::cos(a) * 0.11f, sw.pos.y + 0.68f, sw.pos.z + std::sin(a) * 0.11f);
+            glVertex3f(sw.pos.x + std::cos(a) * 0.08f, sw.pos.y + 0.75f, sw.pos.z + std::sin(a) * 0.08f);
+        }
+    }
+
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
+static void renderDoors(const std::vector<Door>& doors) {
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glPointSize(3.8f);
+    glBegin(GL_POINTS);
+
+    for (const auto& door : doors) {
+        if (door.revealTimer <= 0.f && !door.open) continue;
+        float fade = door.open ? 1.f : clampf(door.revealTimer / 1.7f, 0.f, 1.f);
+        if (door.open) glColor4f(0.16f, 1.0f, 0.25f, 0.95f);
+        else glColor4f(1.0f, 0.18f, 0.18f, 0.42f + 0.48f * fade);
+
+        float y1 = door.pos.y;
+        float y2 = door.pos.y + door.height;
+
+        if (door.axis == 'z') {
+            float z1 = door.pos.z - door.width * 0.5f;
+            float z2 = door.pos.z + door.width * 0.5f;
+            float x = door.pos.x;
+
+            for (int i = 0; i <= 24; ++i) {
+                float t = (float)i / 24.f;
+                float y = y1 + (y2 - y1) * t;
+                glVertex3f(x, y, z1);
+                glVertex3f(x, y, z2);
+            }
+            for (int i = 0; i <= 20; ++i) {
+                float t = (float)i / 20.f;
+                float z = z1 + (z2 - z1) * t;
+                glVertex3f(x, y2, z);
+            }
+            if (!door.open) {
+                for (int i = 0; i <= 14; ++i) {
+                    float t = (float)i / 14.f;
+                    float y = y1 + (y2 - y1) * t;
+                    glVertex3f(x, y, door.pos.z);
+                }
+            }
+        } else {
+            float x1 = door.pos.x - door.width * 0.5f;
+            float x2 = door.pos.x + door.width * 0.5f;
+            float z = door.pos.z;
+
+            for (int i = 0; i <= 24; ++i) {
+                float t = (float)i / 24.f;
+                float y = y1 + (y2 - y1) * t;
+                glVertex3f(x1, y, z);
+                glVertex3f(x2, y, z);
+            }
+            for (int i = 0; i <= 20; ++i) {
+                float t = (float)i / 20.f;
+                float x = x1 + (x2 - x1) * t;
+                glVertex3f(x, y2, z);
+            }
+            if (!door.open) {
+                for (int i = 0; i <= 14; ++i) {
+                    float t = (float)i / 14.f;
+                    float y = y1 + (y2 - y1) * t;
+                    glVertex3f(door.pos.x, y, z);
+                }
+            }
+        }
+    }
+
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
+static void renderBatteryHUD(sf::RenderWindow& window, float battery, bool areaScanHeld, int levelNumber, int switchesActive, int switchesTotal) {
+    sf::RectangleShape bg(sf::Vector2f(220.f, 20.f));
     bg.setPosition(12.f, 12.f);
     bg.setFillColor(sf::Color(30, 10, 10));
     window.draw(bg);
 
-    sf::RectangleShape fill({220.f * (battery / 100.f), 20.f});
+    sf::RectangleShape fill(sf::Vector2f(220.f * (battery / 100.f), 20.f));
     fill.setPosition(12.f, 12.f);
     fill.setFillColor(sf::Color(220, 220, 220));
     window.draw(fill);
@@ -672,7 +1100,7 @@ static void renderBatteryHUD(sf::RenderWindow& window, float battery, bool areaM
         modeText.setFillColor(sf::Color::White);
         modeText.setPosition(12.f, 40.f);
 
-        if (areaMode)
+        if (areaScanHeld)
             modeText.setString("Scan Mode: AREA (120 deg, 150 rays)");
         else
             modeText.setString("Scan Mode: LOCAL (32 deg, 90 rays)");
@@ -685,17 +1113,17 @@ static void renderBatteryHUD(sf::RenderWindow& window, float battery, bool areaM
         batteryText.setFillColor(sf::Color::White);
         batteryText.setPosition(12.f, 65.f);
 
-        char batteryStr[32];
-        sprintf(batteryStr, "Battery: %.0f%%", battery);
+        char batteryStr[128];
+        std::sprintf(batteryStr, "Battery: %.0f%%   Level: %d   Switches: %d/%d   E = activate", battery, levelNumber, switchesActive, switchesTotal);
         batteryText.setString(batteryStr);
         window.draw(batteryText);
     } else {
-        sf::RectangleShape modeRect({220.f, 18.f});
+        sf::RectangleShape modeRect(sf::Vector2f(220.f, 18.f));
         modeRect.setPosition(12.f, 40.f);
-        modeRect.setFillColor(areaMode ? sf::Color(0, 100, 0) : sf::Color(100, 0, 0));
+        modeRect.setFillColor(areaScanHeld ? sf::Color(0, 100, 0) : sf::Color(100, 0, 0));
         window.draw(modeRect);
 
-        sf::RectangleShape batteryRect({220.f, 14.f});
+        sf::RectangleShape batteryRect(sf::Vector2f(220.f, 14.f));
         batteryRect.setPosition(12.f, 65.f);
         batteryRect.setFillColor(sf::Color(50, 50, 50));
         window.draw(batteryRect);
@@ -744,9 +1172,33 @@ int main() {
     glLightModelfv(GL_LIGHT_MODEL_AMBIENT, globalAmbient);
 
     MapLoader map;
-    if (!map.load("map.txt")) {
-        std::cout << "Could not load map.txt, using fallback map\n";
+    int currentLevel = 1;
+
+    auto loadLevelData = [&](int levelIndex) {
+        MapLoader newMap;
+        std::string filename = "map-" + std::to_string(levelIndex) + ".txt";
+        bool loaded = newMap.load(filename);
+
+        if (!loaded && levelIndex == 1) {
+            loaded = newMap.load("map.txt");
+        }
+        if (!loaded && levelIndex == 1) {
+            newMap.loadFallbackMap();
+            loaded = true;
+        }
+        if (!loaded) {
+            return false;
+        }
+
+        map = newMap;
+        currentLevel = levelIndex;
+        return true;
+    };
+
+    if (!loadLevelData(1)) {
+        std::cout << "Could not load any starting map, using fallback map\n";
         map.loadFallbackMap();
+        currentLevel = 1;
     }
 
     // initialize camera at the map's spawn point
@@ -758,11 +1210,11 @@ int main() {
 
     float battery = 100.f; // start with full battery
     bool localScanHeld = false; // true while left mouse button is pressed
+    bool areaScanHeld = false;
+    bool interactPressed = false;
     const float passiveRecharge = 3.5f; // % per second when not scanning
     const float localScanDrain = 18.0f; // % per second while scanning
     const float playerRadius = 0.28f; // collision sphere radius
-
-    bool areaMode = false; // false = local scan, true = area scan
 
     // current screen: starts on the main menu; transitions to Playing on Start
     GameState state = GameState::MainMenu;
@@ -771,20 +1223,75 @@ int main() {
     Settings cfg;
     std::vector<sf::FloatRect> menuBounds;
 
-    // resets all game-session data
-    auto startGame = [&]() {
-        cam.pos       = map.spawn;
+    auto updateDoorsFromSwitches = [&]() {
+        bool shouldOpen = map.switches.empty();
+        if (!map.switches.empty()) {
+            shouldOpen = std::all_of(map.switches.begin(), map.switches.end(), [](const Switch& sw) {
+                return sw.activated;
+            });
+        }
+        for (auto& door : map.doors) {
+            door.open = shouldOpen;
+            if (door.open) {
+                door.revealTimer = std::max(door.revealTimer, 2.4f);
+            }
+        }
+    };
+
+    auto applySpawnState = [&]() {
+        cam.pos = map.spawn;
+        cam.yaw = -1.5707963f;
+        cam.pitch = 0.f;
         cam.mouseSens = cfg.mouseSens();
-        cam.fovY      = cfg.fov();
+        cam.fovY = cfg.fov();
         cam.updateFront();
-        battery       = 100.f;
+        battery = 100.f;
         localScanHeld = false;
+        areaScanHeld = false;
+        interactPressed = false;
         cloud.points.clear();
+        for (auto& spike : map.spikes) spike.revealTimer = 0.f;
+        for (auto& sw : map.switches) {
+            sw.activated = false;
+            sw.revealTimer = 0.f;
+        }
+        for (auto& door : map.doors) {
+            door.open = false;
+            door.revealTimer = 0.f;
+        }
+        updateDoorsFromSwitches();
+        sf::Vector2u sz = window.getSize();
+        sf::Mouse::setPosition(sf::Vector2i((int)sz.x / 2, (int)sz.y / 2), window);
+    };
+
+    auto enterPlaying = [&]() {
         state = GameState::Playing;
         window.setMouseCursorVisible(false);
         window.setMouseCursorGrabbed(true); // keep mouse inside window
-        sf::Vector2u sz = window.getSize();
-        sf::Mouse::setPosition(sf::Vector2i((int)sz.x / 2, (int)sz.y / 2), window);
+    };
+
+    // resets all game-session data
+    auto startGame = [&]() {
+        loadLevelData(1);
+        applySpawnState();
+        enterPlaying();
+    };
+
+    auto restartLevel = [&]() {
+        applySpawnState();
+        enterPlaying();
+    };
+
+    auto goToNextLevel = [&]() {
+        int nextLevel = currentLevel + 1;
+        if (loadLevelData(nextLevel)) {
+            applySpawnState();
+            enterPlaying();
+        } else {
+            state = GameState::MainMenu;
+            window.setMouseCursorVisible(true);
+            window.setMouseCursorGrabbed(false);
+        }
     };
 
     sf::Clock clock;
@@ -804,14 +1311,10 @@ int main() {
 
             // main menu events
             if (state == GameState::MainMenu) {
-                // escape on the main menu exits the application
-                if (event.type == sf::Event::KeyPressed &&
-                    event.key.code == sf::Keyboard::Escape)
+                if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape)
                     window.close();
 
-                if (event.type == sf::Event::MouseButtonReleased &&
-                    event.mouseButton.button == sf::Mouse::Left)
-                {
+                if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Left) {
                     sf::Vector2i mp(event.mouseButton.x, event.mouseButton.y);
                     for (int i = 0; i < (int)menuBounds.size(); ++i) {
                         if (!menuBounds[i].contains((float)mp.x, (float)mp.y)) continue;
@@ -822,17 +1325,12 @@ int main() {
                     }
                 }
             }
-
             // settings screen events
             else if (state == GameState::Settings) {
-                // escape on the settings screen goes back to the main menu
-                if (event.type == sf::Event::KeyPressed &&
-                    event.key.code == sf::Keyboard::Escape)
+                if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape)
                     state = GameState::MainMenu;
 
-                if (event.type == sf::Event::MouseButtonReleased &&
-                    event.mouseButton.button == sf::Mouse::Left)
-                {
+                if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Left) {
                     sf::Vector2i mp(event.mouseButton.x, event.mouseButton.y);
                     for (int i = 0; i < (int)menuBounds.size(); ++i) {
                         if (!menuBounds[i].contains((float)mp.x, (float)mp.y)) continue;
@@ -843,31 +1341,41 @@ int main() {
                     }
                 }
             }
+            else if (state == GameState::GameOver) {
+                if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape)
+                    state = GameState::MainMenu;
 
+                if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Left) {
+                    sf::Vector2i mp(event.mouseButton.x, event.mouseButton.y);
+                    if (menuBounds.size() >= 1 && menuBounds[0].contains((float)mp.x, (float)mp.y)) {
+                        restartLevel();
+                    } else if (menuBounds.size() >= 2 && menuBounds[1].contains((float)mp.x, (float)mp.y)) {
+                        window.close();
+                    }
+                }
+            }
             // in-game events
             else {
-                // escape in-game returns to the main menu without quitting
-                if (event.type == sf::Event::KeyPressed &&
-                    event.key.code == sf::Keyboard::Escape)
-                {
+                if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape) {
                     state = GameState::MainMenu;
+                    localScanHeld = false;
+                    areaScanHeld = false;
                     window.setMouseCursorVisible(true);
                     window.setMouseCursorGrabbed(false);
                 }
 
-                // left mouse button controls the scan
-                if (event.type == sf::Event::MouseButtonPressed &&
-                    event.mouseButton.button == sf::Mouse::Left)
+                if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left)
                     localScanHeld = true;
-
-                if (event.type == sf::Event::MouseButtonReleased &&
-                    event.mouseButton.button == sf::Mouse::Left)
+                if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Left)
                     localScanHeld = false;
 
-                // press M to toggle local/area scan mode
-                if (event.type == sf::Event::KeyPressed &&
-                    event.key.code == sf::Keyboard::M)
-                    areaMode = !areaMode;
+                if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Right)
+                    areaScanHeld = true;
+                if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Right)
+                    areaScanHeld = false;
+
+                if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::E)
+                    interactPressed = true;
             }
         }
 
@@ -886,16 +1394,11 @@ int main() {
             cam.yaw += (float)delta.x * cam.mouseSens;
             cam.pitch -= (float)delta.y * cam.mouseSens; // subtract because y increases downward
             cam.pitch = clampf(cam.pitch, -1.50f, 1.50f); // limit to ~±85° to avoid gimbal lock
-            // wiki: Gimbal lock is the loss of one degree of freedom in a multi-dimensional mechanism
-            // at certain alignments of the axes. In a three-dimensional three-gimbal mechanism,
-            // gimbal lock occurs when the axes of two of the gimbals are driven into a parallel configuration,
-            // "locking" the system into rotation in a degenerate two-dimensional space.
-
             cam.updateFront();
 
             // movement: compute desired move direction based on keys
             Vec3 forward = cam.front;
-            forward.y = 0.f; // project onto horizontal plane
+            forward.y = 0.f;  // project onto horizontal plane
             forward = normalize(forward);
 
             Vec3 right = normalize(Vec3{-forward.z, 0.f, forward.x}); // perpendicular horizontal
@@ -906,9 +1409,7 @@ int main() {
             if (sf::Keyboard::isKeyPressed(sf::Keyboard::A)) move = move - right;
             if (sf::Keyboard::isKeyPressed(sf::Keyboard::D)) move = move + right;
 
-            if (lengthVec(move) > 0.001f) {
-                move = normalize(move) * cam.moveSpeed;
-            }
+            if (lengthVec(move) > 0.001f) move = normalize(move) * cam.moveSpeed;
 
             // apply movement with sliding collision
             Vec3 deltaMove = move * dt;
@@ -916,14 +1417,43 @@ int main() {
             // keep camera Y fixed to spawn height y
             cam.pos.y = map.spawn.y;
 
-            // scanning and battery management
-            if (localScanHeld && battery > 0.f) {
-                if (areaMode) {
-                    // wider and denser scan mode
-                    cloud.scan(cam, map.boxes, 150, 120.f, 12.f);
+            if (collidesWithAnySpike(cam.pos, playerRadius, map.spikes)) {
+                localScanHeld = false;
+                areaScanHeld = false;
+                interactPressed = false;
+                state = GameState::GameOver;
+                window.setMouseCursorVisible(true);
+                window.setMouseCursorGrabbed(false);
+            }
+
+            if (state == GameState::Playing && interactPressed) {
+                for (auto& sw : map.switches) {
+                    if (!sw.activated && isNearSwitchInteraction(cam.pos, sw)) {
+                        sw.activated = true;
+                        sw.revealTimer = 3.0f;
+                        updateDoorsFromSwitches();
+                        break;
+                    }
+                }
+                interactPressed = false;
+            }
+
+            // game logic runs only while Playing; menus need no per-frame simulation
+            if (state == GameState::Playing) {
+                for (const auto& door : map.doors) {
+                    if (isNearOpenDoor(cam.pos, door)) {
+                        goToNextLevel();
+                        break;
+                    }
+                }
+            }
+
+            bool scanning = state == GameState::Playing && (localScanHeld || areaScanHeld) && battery > 0.f;
+            if (scanning) {
+                if (areaScanHeld) {
+                    cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, 150, 120.f, 12.f);
                 } else {
-                    // generate 90 rays within a 32° cone, up to 10 units distance
-                    cloud.scan(cam, map.boxes, 90, 32.f, 10.f);
+                    cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, 90, 32.f, 10.f);
                 }
                 battery -= localScanDrain * dt;
             } else {
@@ -932,12 +1462,15 @@ int main() {
 
             battery = clampf(battery, 0.f, 100.f);
             cloud.update(dt);
+            updateSpikeReveal(map.spikes, dt);
+            updateSwitchReveal(map.switches, dt);
+            updateDoorReveal(map.doors, dt);
         }
 
         // 3d render
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        if (state == GameState::Playing) {
+        if (state == GameState::Playing || state == GameState::GameOver) {
             // set up camera projection and view matrices
             glMatrixMode(GL_PROJECTION);
             glLoadIdentity();
@@ -958,15 +1491,23 @@ int main() {
                 drawBox(wb.box);
             }
 
+            renderDoors(map.doors);
+            renderSwitches(map.switches);
+            renderSpikes(map.spikes);
             // draw the point cloud
             cloud.render();
+
+            int switchesActive = 0;
+            for (const auto& sw : map.switches) if (sw.activated) ++switchesActive;
 
             // 2d render
             // SFML's 2D rendering uses its own OpenGL state; using push and pop to avoid conflicts
             window.pushGLStates();
-            renderBatteryHUD(window, battery, areaMode);
+            renderBatteryHUD(window, battery, areaScanHeld, currentLevel, switchesActive, (int)map.switches.size());
+            if (state == GameState::GameOver) {
+                renderGameOverOverlay(window, menuBounds);
+            }
             window.popGLStates();
-
         } else {
             // 2d menu render (no 3d scene behind it)
             // SFML's 2D rendering uses its own OpenGL state; using push and pop to avoid conflicts
