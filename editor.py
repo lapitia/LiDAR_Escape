@@ -1,6 +1,6 @@
 """
 LiDAR Escape Map Editor
-A simple 2D top-down editor for making maps creation easier and quicker.
+Top-down editor with walls, spikes, switches and exit doors for multi-level maps.
 """
 
 import tkinter as tk
@@ -9,19 +9,29 @@ import os
 
 # constants
 GRID_SIZE = 40 #size of grid cells in pixels (world units per cell)
-DEFAULT_MAP_FILE = "map.txt" # default file name for saving/loading
+DEFAULT_MAP_FILE = "map-1.txt"
 
 # color mapping for different objects (only walls for now)
 BOX_COLORS = {
     "wall": "#bababa" #grayish
 }
 
+SPIKE_COLOR = "#ff3b3b"
+SWITCH_COLOR = "#33d1ff"
+DOOR_COLOR = "#55ff66"
+SPIKE_PICK_RADIUS = 0.35
+POINT_PICK_RADIUS = 0.45
+SPIKE_SIZE = 8
+SWITCH_SIZE = 8
+DOOR_HALF_WIDTH = 0.8
+DOOR_ATTACH_THRESHOLD = 0.8
+
 
 class MapEditor:
     def __init__(self, root):
         """Initialize the editor window, set up variables, build UI, and load default map"""
         self.root = root
-        self.root.title("LiDAR Escape - Simple Editor")
+        self.root.title("LiDAR Escape - Multi-Map Editor")
         self.root.geometry("1500x900")
         self.root.configure(bg="#181818")
 
@@ -42,6 +52,9 @@ class MapEditor:
         self.auto_padding = 0.0 # extra space around walls for auto floor/ceiling
 
         self.boxes = []
+        self.spikes = []
+        self.switches = []
+        self.doors = []
         self.spawn = [0.0, 1.55, 7.0] # [x, y, z] spawn point
 
         # different states
@@ -87,15 +100,11 @@ class MapEditor:
         )
         title.pack(anchor="w", padx=12, pady=(12, 8))
 
-        # tool selection
-        tool_frame = tk.LabelFrame(
-            self.left_panel, text="Tools",
-            bg="#202225", fg="white", padx=8, pady=8
-        )
+        tool_frame = tk.LabelFrame(self.left_panel, text="Tools", bg="#202225", fg="white", padx=8, pady=8)
         tool_frame.pack(fill=tk.X, padx=12, pady=8)
 
         self.tool_buttons = {}
-        for tool in ["wall", "spawn", "select"]:
+        for tool in ["wall", "spike", "switch", "door", "spawn", "select"]:
             btn = tk.Button(
                 tool_frame,
                 text=tool,
@@ -109,11 +118,7 @@ class MapEditor:
             btn.pack(fill=tk.X, pady=2)
             self.tool_buttons[tool] = btn
 
-        # geometry settings (auto floor/ceiling parameters)
-        settings_frame = tk.LabelFrame(
-            self.left_panel, text="Auto geometry settings",
-            bg="#202225", fg="white", padx=8, pady=8
-        )
+        settings_frame = tk.LabelFrame(self.left_panel, text="Auto geometry settings", bg="#202225", fg="white", padx=8, pady=8)
         settings_frame.pack(fill=tk.X, padx=12, pady=8)
 
         def add_entry(label, value):
@@ -130,69 +135,67 @@ class MapEditor:
         self.spawn_height_entry = add_entry("Spawn height", "1.55")
         self.padding_entry = add_entry("Auto floor/ceiling padding", "0.0")
 
-        # file operations
-        actions_frame = tk.LabelFrame(
-            self.left_panel, text="File",
-            bg="#202225", fg="white", padx=8, pady=8
-        )
+        actions_frame = tk.LabelFrame(self.left_panel, text="File", bg="#202225", fg="white", padx=8, pady=8)
         actions_frame.pack(fill=tk.X, padx=12, pady=8)
-
         tk.Button(actions_frame, text="New map", command=self.new_map, bg="#2f3136", fg="white", relief=tk.FLAT).pack(fill=tk.X, pady=2)
-        tk.Button(actions_frame, text="Open map.txt", command=self.open_map, bg="#2f3136", fg="white", relief=tk.FLAT).pack(fill=tk.X, pady=2)
-        tk.Button(actions_frame, text="Save map.txt", command=self.save_map, bg="#2f3136", fg="white", relief=tk.FLAT).pack(fill=tk.X, pady=2)
+        tk.Button(actions_frame, text="Open map", command=self.open_map, bg="#2f3136", fg="white", relief=tk.FLAT).pack(fill=tk.X, pady=2)
+        tk.Button(actions_frame, text="Save map", command=self.save_map, bg="#2f3136", fg="white", relief=tk.FLAT).pack(fill=tk.X, pady=2)
         tk.Button(actions_frame, text="Save as...", command=self.save_map_as, bg="#2f3136", fg="white", relief=tk.FLAT).pack(fill=tk.X, pady=2)
 
-        # selected wall info
-        selected_frame = tk.LabelFrame(
-            self.left_panel, text="Selected wall",
-            bg="#202225", fg="white", padx=8, pady=8
-        )
+        selected_frame = tk.LabelFrame(self.left_panel, text="Selected wall", bg="#202225", fg="white", padx=8, pady=8)
         selected_frame.pack(fill=tk.X, padx=12, pady=8)
 
-        self.selected_info = tk.Text(
-            selected_frame, height=8,
-            bg="#111111", fg="white",
-            insertbackground="white", relief=tk.FLAT
-        )
+        self.selected_info = tk.Text(selected_frame, height=9, bg="#111111", fg="white", insertbackground="white", relief=tk.FLAT)
         self.selected_info.pack(fill=tk.X)
 
         # just for comfort of double checking controls
         instructions = (
-            "- drawing only walls for now\n"
+            "- draw walls with drag\n"
+            "- place spikes and switches with click\n"
+            "- place doors by clicking a wall edge\n"
+            "- save levels as map-1.txt, map-2.txt and so on\n"
             "- floor and ceiling are generated automatically on save\n"
-            "- spawn is player's start point\n\n"
+            "- door = exit to next level, switch = activate objective\n\n"
             "Mouse:\n"
             "LMB drag = create wall\n"
-            "RMB = delete wall under cursor\n"
+            "LMB click = place spike/switch/spawn or attach door\n"
+            "RMB = delete object under cursor\n"
             "MMB drag = move screen\n"
             "Wheel = zoom\n\n"
             "Keyboard:\n"
-            "1 = wall tool\n"
-            "2 = spawn tool\n"
-            "Q = select tool\n"
+            "1 = wall\n"
+            "2 = spike\n"
+            "3 = switch\n"
+            "4 = door\n"
+            "5 = spawn\n"
+            "Q = select\n"
             "Delete = delete selected wall\n"
             "Ctrl+S = save\n"
             "Ctrl+O = open\n"
-            "Ctrl+N = new map\n"
-            "G = toggle grid size\n\n"
-            "Select mode:\n"
-            "- click wall to select\n"
-            "- drag inside = move\n"
-            "- drag near edge = resize\n\n"
+            "Ctrl+N = new map\n\n"
             "Export format:\n"
             "spawn x y z\n"
             "floor ... (auto)\n"
             "ceiling ... (auto)\n"
+            "switch x y z\n"
+            "door x y z axis(x/z)\n"
+            "spike x y z\n"
             "wall ...\n"
         )
+
+        help_frame = tk.LabelFrame(self.left_panel, text="Help", bg="#202225", fg="white", padx=8, pady=8)
+        help_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
+
+        help_text = tk.Text(help_frame, height=18, bg="#111111", fg="white", insertbackground="white", relief=tk.FLAT, wrap="word")
+        help_text.insert("1.0", instructions)
+        help_text.configure(state="disabled")
+        help_text.pack(fill=tk.BOTH, expand=True)
 
         # top bar on right
         top_bar = tk.Frame(self.right_panel, bg="#181818", height=32)
         top_bar.pack(fill=tk.X)
-
         self.file_label = tk.Label(top_bar, textvariable=self.file_var, bg="#181818", fg="white")
         self.file_label.pack(side=tk.LEFT, padx=10)
-
         self.status_label = tk.Label(top_bar, textvariable=self.status_var, bg="#181818", fg="#bfbfbf")
         self.status_label.pack(side=tk.RIGHT, padx=10)
 
@@ -205,27 +208,26 @@ class MapEditor:
     def bind_events(self):
         # keyboard shortcuts
         self.root.bind("<KeyPress-1>", lambda e: self.set_tool("wall"))
-        self.root.bind("<KeyPress-2>", lambda e: self.set_tool("spawn"))
+        self.root.bind("<KeyPress-2>", lambda e: self.set_tool("spike"))
+        self.root.bind("<KeyPress-3>", lambda e: self.set_tool("switch"))
+        self.root.bind("<KeyPress-4>", lambda e: self.set_tool("door"))
+        self.root.bind("<KeyPress-5>", lambda e: self.set_tool("spawn"))
         self.root.bind("<KeyPress-q>", lambda e: self.set_tool("select"))
         self.root.bind("<Delete>", self.delete_selected)
         self.root.bind("<Control-s>", lambda e: self.save_map())
         self.root.bind("<Control-o>", lambda e: self.open_map())
         self.root.bind("<Control-n>", lambda e: self.new_map())
-        self.root.bind("<KeyPress-g>", self.toggle_grid_size)
 
         # mouse events on canvas
         self.canvas.bind("<Button-1>", self.on_left_down)
         self.canvas.bind("<B1-Motion>", self.on_left_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_left_up)
         self.canvas.bind("<Button-3>", self.on_right_click)
-
         self.canvas.bind("<Button-2>", self.on_middle_down)
         self.canvas.bind("<B2-Motion>", self.on_middle_drag)
         self.canvas.bind("<ButtonRelease-2>", self.on_middle_up)
-
         self.canvas.bind("<MouseWheel>", self.on_mousewheel)
 
-    # helpers
     def set_status(self, text):
         """Update the status bar message"""
         self.status_var.set(text)
@@ -235,9 +237,9 @@ class MapEditor:
         self.current_tool = tool
         for name, btn in self.tool_buttons.items():
             btn.configure(bg="#5865f2" if name == tool else "#2f3136")
-        self.set_status(f"Tool: {tool}")
         self.selected_index = None # clear selection when changing tool
         self.update_selected_info()
+        self.set_status(f"Tool: {tool}")
         self.redraw()
 
     def read_settings(self):
@@ -256,7 +258,6 @@ class MapEditor:
         self.spawn_height = get_float(self.spawn_height_entry, 1.55)
         self.auto_padding = get_float(self.padding_entry, 0.0)
 
-    # conversion of stuff
     def world_to_screen(self, x, z):
         """Convert world coordinates (x,z) to screen pixel coordinates"""
         s = GRID_SIZE * self.zoom
@@ -281,21 +282,15 @@ class MapEditor:
         h = self.canvas.winfo_height()
         if w <= 1 or h <= 1:
             return
-
         step = GRID_SIZE * self.zoom
         if step < 8: # don't draw if too small
             return
-
         # calculate starting positions to center grid
         start_x = (self.offset_x + w / 2) % step
         start_y = (self.offset_y + h / 2) % step
-
-        # draw vertical lines
-        for x in range(int(start_x), w, int(step) if step >= 1 else 1):
+        for x in range(int(start_x), w, max(1, int(step))):
             self.canvas.create_line(x, 0, x, h, fill="#1d1d1d")
-
-        # draw horizontal lines
-        for y in range(int(start_y), h, int(step) if step >= 1 else 1):
+        for y in range(int(start_y), h, max(1, int(step))):
             self.canvas.create_line(0, y, w, y, fill="#1d1d1d")
 
     def get_auto_bounds(self):
@@ -308,6 +303,31 @@ class MapEditor:
         max_z = max(b["maxZ"] for b in self.boxes) + self.auto_padding
         return min_x, min_z, max_x, max_z
 
+    def draw_spike_icon(self, sx, sy):
+        self.canvas.create_polygon(
+            sx, sy - SPIKE_SIZE,
+                sx - SPIKE_SIZE * 0.65, sy + SPIKE_SIZE * 0.85,
+                sx + SPIKE_SIZE * 0.65, sy + SPIKE_SIZE * 0.85,
+            fill=SPIKE_COLOR,
+            outline="#ffd0d0",
+            width=2
+        )
+
+    def draw_switch_icon(self, sx, sy):
+        self.canvas.create_line(sx, sy + 8, sx, sy - 8, fill=SWITCH_COLOR, width=3)
+        self.canvas.create_oval(sx - SWITCH_SIZE, sy - SWITCH_SIZE, sx + SWITCH_SIZE, sy + SWITCH_SIZE, fill=SWITCH_COLOR, outline="white", width=2)
+
+    def draw_door_icon(self, sx, sy, axis):
+        w = DOOR_HALF_WIDTH * GRID_SIZE * self.zoom
+        if axis == "z":
+            self.canvas.create_line(sx - 18, sy - w, sx + 12, sy - w, fill=DOOR_COLOR, width=3)
+            self.canvas.create_line(sx - 18, sy + w, sx + 12, sy + w, fill=DOOR_COLOR, width=3)
+            self.canvas.create_line(sx - 18, sy - w, sx - 18, sy + w, fill=DOOR_COLOR, width=3)
+        else:
+            self.canvas.create_line(sx - w, sy + 12, sx - w, sy - 18, fill=DOOR_COLOR, width=3)
+            self.canvas.create_line(sx + w, sy + 12, sx + w, sy - 18, fill=DOOR_COLOR, width=3)
+            self.canvas.create_line(sx - w, sy - 18, sx + w, sy - 18, fill=DOOR_COLOR, width=3)
+
     def redraw(self):
         """Clear and redraw the entire canvas (to reset/update stuff)"""
         self.canvas.delete("all")
@@ -319,53 +339,38 @@ class MapEditor:
             min_x, min_z, max_x, max_z = bounds
             sx1, sy1 = self.world_to_screen(min_x, min_z)
             sx2, sy2 = self.world_to_screen(max_x, max_z)
-            self.canvas.create_rectangle(
-                sx1, sy1, sx2, sy2,
-                outline="#2ecc71",
-                dash=(6, 4),
-                width=2
-            )
-            self.canvas.create_text(
-                sx1 + 8, sy1 + 8,
-                text="auto floor/ceiling",
-                fill="#2ecc71",
-                anchor="nw",
-                font=("Segoe UI", 10, "bold")
-            )
+            self.canvas.create_rectangle(sx1, sy1, sx2, sy2, outline="#2ecc71", dash=(6, 4), width=2)
+            self.canvas.create_text(sx1 + 8, sy1 + 8, text="auto floor/ceiling", fill="#2ecc71", anchor="nw", font=("Segoe UI", 10, "bold"))
 
         # draw all walls
         for i, obj in enumerate(self.boxes):
             sx1, sy1 = self.world_to_screen(obj["minX"], obj["minZ"])
             sx2, sy2 = self.world_to_screen(obj["maxX"], obj["maxZ"])
-
             color = BOX_COLORS.get(obj["type"], "#aaaaaa")
             outline = "#ffffff" if i == self.selected_index else color
             width = 3 if i == self.selected_index else 2
+            self.canvas.create_rectangle(sx1, sy1, sx2, sy2, fill=color, outline=outline, width=width, stipple="gray25")
+            self.canvas.create_text((sx1 + sx2) / 2, (sy1 + sy2) / 2, text="wall", fill="white", font=("Segoe UI", 9, "bold"))
 
-            self.canvas.create_rectangle(
-                sx1, sy1, sx2, sy2,
-                fill=color,
-                outline=outline,
-                width=width,
-                stipple="gray25"
-            )
+        for spike in self.spikes:
+            sx, sy = self.world_to_screen(spike["x"], spike["z"])
+            self.draw_spike_icon(sx, sy)
+            self.canvas.create_text(sx + 12, sy - 10, text="SPIKE", fill=SPIKE_COLOR, anchor="w", font=("Segoe UI", 9, "bold"))
 
-            self.canvas.create_text(
-                (sx1 + sx2) / 2,
-                (sy1 + sy2) / 2,
-                text="wall",
-                fill="white",
-                font=("Segoe UI", 9, "bold")
-            )
+        for sw in self.switches:
+            sx, sy = self.world_to_screen(sw["x"], sw["z"])
+            self.draw_switch_icon(sx, sy)
+            self.canvas.create_text(sx + 14, sy - 12, text="SWITCH", fill=SWITCH_COLOR, anchor="w", font=("Segoe UI", 9, "bold"))
+
+        for door in self.doors:
+            sx, sy = self.world_to_screen(door["x"], door["z"])
+            self.draw_door_icon(sx, sy, door.get("axis", "x"))
+            self.canvas.create_text(sx + 16, sy - 24, text=f'DOOR {door.get("axis", "x").upper()}', fill=DOOR_COLOR, anchor="w", font=("Segoe UI", 9, "bold"))
+
         spawn_sx, spawn_sy = self.world_to_screen(self.spawn[0], self.spawn[2])
         self.canvas.create_oval(spawn_sx - 7, spawn_sy - 7, spawn_sx + 7, spawn_sy + 7, fill="#ffcc00", outline="white", width=2)
         self.canvas.create_text(spawn_sx + 16, spawn_sy - 12, text="SPAWN", fill="#ffcc00", anchor="w", font=("Segoe UI", 10, "bold"))
 
-        # preview on top of the layers
-        if self.preview_rect:
-            self.canvas.tag_raise(self.preview_rect)
-
-    # object selection + info
     def canvas_pick_box(self, sx, sy):
         """Return the index of the wall under screen coordinates (sx, sy)"""
         wx, wz = self.screen_to_world(sx, sy)
@@ -375,25 +380,59 @@ class MapEditor:
                 return i
         return None
 
+    def canvas_pick_point(self, items, sx, sy, radius=POINT_PICK_RADIUS):
+        wx, wz = self.screen_to_world(sx, sy)
+        for i in range(len(items) - 1, -1, -1):
+            dx = wx - items[i]["x"]
+            dz = wz - items[i]["z"]
+            if dx * dx + dz * dz <= radius * radius:
+                return i
+        return None
+
+    def find_nearest_wall_face(self, wx, wz):
+        best = None
+        best_dist = None
+        for wall in self.boxes:
+            if wall["type"] != "wall":
+                continue
+            inside_x = wall["minX"] - DOOR_ATTACH_THRESHOLD <= wx <= wall["maxX"] + DOOR_ATTACH_THRESHOLD
+            inside_z = wall["minZ"] - DOOR_ATTACH_THRESHOLD <= wz <= wall["maxZ"] + DOOR_ATTACH_THRESHOLD
+            if not (inside_x and inside_z):
+                continue
+
+            candidates = [
+                (abs(wx - wall["minX"]), wall["minX"], wz, "z"),
+                (abs(wx - wall["maxX"]), wall["maxX"], wz, "z"),
+                (abs(wz - wall["minZ"]), wx, wall["minZ"], "x"),
+                (abs(wz - wall["maxZ"]), wx, wall["maxZ"], "x"),
+            ]
+
+            for dist, px, pz, axis in candidates:
+                if axis == "z":
+                    pz = min(max(pz, wall["minZ"] + DOOR_HALF_WIDTH), wall["maxZ"] - DOOR_HALF_WIDTH)
+                else:
+                    px = min(max(px, wall["minX"] + DOOR_HALF_WIDTH), wall["maxX"] - DOOR_HALF_WIDTH)
+                if dist <= DOOR_ATTACH_THRESHOLD and (best_dist is None or dist < best_dist):
+                    best_dist = dist
+                    best = {"x": float(px), "y": self.floor_y + 0.05, "z": float(pz), "axis": axis}
+        return best
+
     def update_selected_info(self):
         self.selected_info.delete("1.0", tk.END)
         if self.selected_index is None:
-            self.selected_info.insert(tk.END, "No selection")
+            self.selected_info.insert(tk.END, "No wall selected")
             return
-
         obj = self.boxes[self.selected_index]
-        text = (
-            f'Type: wall\n'
-            f'minX: {obj["minX"]:.2f}\n'
-            f'minY: {obj["minY"]:.2f}\n'
-            f'minZ: {obj["minZ"]:.2f}\n'
-            f'maxX: {obj["maxX"]:.2f}\n'
-            f'maxY: {obj["maxY"]:.2f}\n'
-            f'maxZ: {obj["maxZ"]:.2f}\n'
-        )
-        self.selected_info.insert(tk.END, text)
+        self.selected_info.insert(tk.END, (
+            f"Type: wall\n"
+            f"minX: {obj['minX']:.2f}\n"
+            f"minY: {obj['minY']:.2f}\n"
+            f"minZ: {obj['minZ']:.2f}\n"
+            f"maxX: {obj['maxX']:.2f}\n"
+            f"maxY: {obj['maxY']:.2f}\n"
+            f"maxZ: {obj['maxZ']:.2f}\n"
+        ))
 
-    # mouse event handlers
     def on_left_down(self, event):
         self.read_settings()
         wx, wz = self.screen_to_world(event.x, event.y)
@@ -406,13 +445,40 @@ class MapEditor:
             self.redraw()
             return
 
+        if self.current_tool == "spike":
+            self.spikes.append({"type": "spike", "x": float(wx), "y": self.floor_y + 0.05, "z": float(wz)})
+            self.set_status(f"Created spike at ({wx}, {self.floor_y + 0.05:.2f}, {wz})")
+            self.redraw()
+            return
+
+        if self.current_tool == "switch":
+            self.switches.append({"type": "switch", "x": float(wx), "y": self.floor_y + 0.05, "z": float(wz)})
+            self.set_status(f"Created switch at ({wx}, {self.floor_y + 0.05:.2f}, {wz})")
+            self.redraw()
+            return
+
+        if self.current_tool == "door":
+            placement = self.find_nearest_wall_face(wx, wz)
+            if placement is None:
+                self.set_status("Door must be placed on a wall edge")
+                return
+            self.doors.append({
+                "type": "door",
+                "x": placement["x"],
+                "y": placement["y"],
+                "z": placement["z"],
+                "axis": placement["axis"],
+            })
+            self.set_status(f'Created {placement["axis"].upper()} door at ({placement["x"]:.2f}, {placement["y"]:.2f}, {placement["z"]:.2f})')
+            self.redraw()
+            return
+
         if self.current_tool == "select":
             # try to select a wall
             idx = self.canvas_pick_box(event.x, event.y)
             self.selected_index = idx
             self.update_selected_info()
             self.redraw()
-
             if idx is not None:
                 # start dragging or resizing
                 self.dragging = True
@@ -425,17 +491,11 @@ class MapEditor:
         self.creating = True
         self.create_start = (wx, wz)
         sx, sy = self.world_to_screen(wx, wz)
-        self.preview_rect = self.canvas.create_rectangle(
-            sx, sy, sx, sy,
-            outline="white",
-            width=2,
-            dash=(5, 3)
-        )
+        self.preview_rect = self.canvas.create_rectangle(sx, sy, sx, sy, outline="white", width=2, dash=(5, 3))
 
     def detect_drag_mode(self, idx, wx, wz):
         b = self.boxes[idx]
-        margin = 0.25 # tolerance for edge detection
-
+        margin = 0.25  # tolerance for edge detection
         if abs(wx - b["minX"]) <= margin:
             return "resize_left"
         if abs(wx - b["maxX"]) <= margin:
@@ -475,7 +535,7 @@ class MapEditor:
                 b["minZ"] = start_box["minZ"] + dz
                 b["maxZ"] = b["minZ"] + depth
             elif self.drag_mode == "resize_left":
-                b["minX"] = min(wx, b["maxX"] - 1)   # Keep at least 1 unit wide
+                b["minX"] = min(wx, b["maxX"] - 1)  # Keep at least 1 unit wide
             elif self.drag_mode == "resize_right":
                 b["maxX"] = max(wx, b["minX"] + 1)
             elif self.drag_mode == "resize_top":
@@ -509,7 +569,7 @@ class MapEditor:
                 self.redraw()
                 return
 
-            obj = {
+            self.boxes.append({
                 "type": "wall",
                 "minX": float(min_x),
                 "minY": self.floor_y,
@@ -517,9 +577,7 @@ class MapEditor:
                 "maxX": float(max_x),
                 "maxY": self.floor_y + self.wall_height,
                 "maxZ": float(max_z),
-            }
-
-            self.boxes.append(obj)
+            })
             self.selected_index = len(self.boxes) - 1
             self.update_selected_info()
             self.set_status("Created wall")
@@ -534,6 +592,18 @@ class MapEditor:
 
     def on_right_click(self, event):
         """Delete wall under cursor on right click"""
+        for collection, name, radius in [
+            (self.spikes, "spike", SPIKE_PICK_RADIUS),
+            (self.switches, "switch", POINT_PICK_RADIUS),
+            (self.doors, "door", POINT_PICK_RADIUS),
+        ]:
+            idx = self.canvas_pick_point(collection, event.x, event.y, radius)
+            if idx is not None:
+                del collection[idx]
+                self.set_status(f"Deleted {name}")
+                self.redraw()
+                return
+
         idx = self.canvas_pick_box(event.x, event.y)
         if idx is not None:
             del self.boxes[idx]
@@ -581,31 +651,21 @@ class MapEditor:
             self.zoom *= 1.1
         else:
             self.zoom *= 0.9
-
         self.zoom = max(self.min_zoom, min(self.max_zoom, self.zoom))
-
         # adjust offset
         mx, my = event.x, event.y
         wx_before, wz_before = self.screen_to_world(mx, my)
-
         s = GRID_SIZE * self.zoom
         self.offset_x = mx - wx_before * s - self.canvas.winfo_width() / 2
         self.offset_y = my - wz_before * s - self.canvas.winfo_height() / 2
-
-        self.set_status(f"Zoom: {self.zoom:.2f}x")
         self.redraw()
 
-    def toggle_grid_size(self, event=None):
-        """Toggle between two grid sizes (40 and 20)"""
-        global GRID_SIZE
-        GRID_SIZE = 20 if GRID_SIZE == 40 else 40
-        self.set_status(f"Grid size: {GRID_SIZE}")
-        self.redraw()
-
-    # file operations
     def new_map(self):
         """Clear all walls and reset spawn to default"""
         self.boxes.clear()
+        self.spikes.clear()
+        self.switches.clear()
+        self.doors.clear()
         self.spawn = [0.0, 1.55, 7.0]
         self.selected_index = None
         self.update_selected_info()
@@ -620,21 +680,20 @@ class MapEditor:
             self.new_map()
 
     def open_map(self):
-        path = filedialog.askopenfilename(
-            title="Open map",
-            filetypes=[("Text map", "*.txt"), ("All files", "*.*")]
-        )
-        if not path:
-            return
-        self.load_map_file(path)
+        path = filedialog.askopenfilename(title="Open map", filetypes=[("Text map", "*.txt"), ("All files", "*.*")])
+        if path:
+            self.load_map_file(path)
 
     def load_map_file(self, path):
         """Parse a map file and load its data"""
         try:
             self.boxes.clear()
+            self.spikes.clear()
+            self.switches.clear()
+            self.doors.clear()
             with open(path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
+                for raw in f:
+                    line = raw.strip()
                     if not line or line.startswith("#"):
                         continue
                     parts = line.split()
@@ -650,6 +709,15 @@ class MapEditor:
                             "maxY": float(parts[5]),
                             "maxZ": float(parts[6]),
                         })
+                    elif parts[0] == "spike" and len(parts) >= 4:
+                        self.spikes.append({"type": "spike", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3])})
+                    elif parts[0] == "switch" and len(parts) >= 4:
+                        self.switches.append({"type": "switch", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3])})
+                    elif parts[0] == "door" and len(parts) >= 4:
+                        axis = parts[4].lower() if len(parts) >= 5 else "x"
+                        if axis not in ("x", "z"):
+                            axis = "x"
+                        self.doors.append({"type": "door", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3]), "axis": axis})
             self.selected_index = None
             self.update_selected_info()
             self.file_var.set(f"File: {path}")
@@ -663,9 +731,7 @@ class MapEditor:
         bounds = self.get_auto_bounds()
         if not bounds:
             return []
-
         min_x, min_z, max_x, max_z = bounds
-
         floor = {
             "type": "floor",
             "minX": min_x,
@@ -675,7 +741,6 @@ class MapEditor:
             "maxY": self.floor_y,
             "maxZ": max_z,
         }
-
         ceiling = {
             "type": "ceiling",
             "minX": min_x,
@@ -685,26 +750,17 @@ class MapEditor:
             "maxY": self.floor_y + self.wall_height + self.ceiling_thickness,
             "maxZ": max_z,
         }
-
         return [floor, ceiling]
 
     def save_map(self):
         current = self.file_var.get().replace("File: ", "").strip()
-        if not current or current == DEFAULT_MAP_FILE and not os.path.isabs(current):
-            self.save_map_file(DEFAULT_MAP_FILE)
-        else:
-            self.save_map_file(current)
+        self.save_map_file(current or DEFAULT_MAP_FILE)
 
     def save_map_as(self):
         """Open a file dialog to choose a save location"""
-        path = filedialog.asksaveasfilename(
-            title="Save map as",
-            defaultextension=".txt",
-            filetypes=[("Text map", "*.txt"), ("All files", "*.*")]
-        )
-        if not path:
-            return
-        self.save_map_file(path)
+        path = filedialog.asksaveasfilename(title="Save map as", defaultextension=".txt", filetypes=[("Text map", "*.txt"), ("All files", "*.*")])
+        if path:
+            self.save_map_file(path)
 
     def save_map_file(self, path):
         """Write map data to a file"""
@@ -713,25 +769,22 @@ class MapEditor:
             auto_parts = self.build_auto_floor_and_ceiling()
             with open(path, "w", encoding="utf-8") as f:
                 f.write(f"spawn {self.spawn[0]:.2f} {self.spawn[1]:.2f} {self.spawn[2]:.2f}\n")
-
                 for obj in auto_parts:
-                    f.write(
-                        f'{obj["type"]} '
-                        f'{obj["minX"]:.2f} {obj["minY"]:.2f} {obj["minZ"]:.2f} '
-                        f'{obj["maxX"]:.2f} {obj["maxY"]:.2f} {obj["maxZ"]:.2f}\n'
-                    )
-
+                    f.write(f'{obj["type"]} {obj["minX"]:.2f} {obj["minY"]:.2f} {obj["minZ"]:.2f} {obj["maxX"]:.2f} {obj["maxY"]:.2f} {obj["maxZ"]:.2f}\n')
+                for obj in self.switches:
+                    f.write(f'switch {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f}\n')
+                for obj in self.doors:
+                    axis = obj.get("axis", "x")
+                    f.write(f'door {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f} {axis}\n')
+                for obj in self.spikes:
+                    f.write(f'spike {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f}\n')
                 for obj in self.boxes:
-                    f.write(
-                        f'{obj["type"]} '
-                        f'{obj["minX"]:.2f} {obj["minY"]:.2f} {obj["minZ"]:.2f} '
-                        f'{obj["maxX"]:.2f} {obj["maxY"]:.2f} {obj["maxZ"]:.2f}\n'
-                    )
-
+                    f.write(f'{obj["type"]} {obj["minX"]:.2f} {obj["minY"]:.2f} {obj["minZ"]:.2f} {obj["maxX"]:.2f} {obj["maxY"]:.2f} {obj["maxZ"]:.2f}\n')
             self.file_var.set(f"File: {path}")
             self.set_status(f"Saved {os.path.basename(path)}")
         except Exception as e:
             messagebox.showerror("Error", f"Could not save map:\n{e}")
+
 
 root = tk.Tk()
 app = MapEditor(root)
