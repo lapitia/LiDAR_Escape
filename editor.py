@@ -1,10 +1,10 @@
 """
 LiDAR Escape Map Editor
-Top-down editor with walls, spikes, switches and exit doors for multi-level maps.
+Top-down editor with walls, spikes, switches, panels, papers and exit doors for multi-level maps.
 """
 
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 import os
 
 # constants
@@ -19,10 +19,14 @@ BOX_COLORS = {
 SPIKE_COLOR = "#ff3b3b"
 SWITCH_COLOR = "#33d1ff"
 DOOR_COLOR = "#55ff66"
+PANEL_COLOR = "#ffcc33"
+PAPER_COLOR = "#ffe78a"
 SPIKE_PICK_RADIUS = 0.35
 POINT_PICK_RADIUS = 0.45
 SPIKE_SIZE = 8
 SWITCH_SIZE = 8
+PANEL_SIZE = 10
+PAPER_SIZE = 8
 DOOR_HALF_WIDTH = 0.8
 DOOR_ATTACH_THRESHOLD = 0.8
 
@@ -55,6 +59,8 @@ class MapEditor:
         self.spikes = []
         self.switches = []
         self.doors = []
+        self.panels = []
+        self.papers = []
         self.spawn = [0.0, 1.55, 7.0] # [x, y, z] spawn point
 
         # different states
@@ -104,7 +110,7 @@ class MapEditor:
         tool_frame.pack(fill=tk.X, padx=12, pady=8)
 
         self.tool_buttons = {}
-        for tool in ["wall", "spike", "switch", "door", "spawn", "select"]:
+        for tool in ["wall", "spike", "switch", "door", "panel", "paper", "spawn", "select"]:
             btn = tk.Button(
                 tool_frame,
                 text=tool,
@@ -145,20 +151,20 @@ class MapEditor:
         selected_frame = tk.LabelFrame(self.left_panel, text="Selected wall", bg="#202225", fg="white", padx=8, pady=8)
         selected_frame.pack(fill=tk.X, padx=12, pady=8)
 
-        self.selected_info = tk.Text(selected_frame, height=9, bg="#111111", fg="white", insertbackground="white", relief=tk.FLAT)
+        self.selected_info = tk.Text(selected_frame, height=12, bg="#111111", fg="white", insertbackground="white", relief=tk.FLAT)
         self.selected_info.pack(fill=tk.X)
 
         # just for comfort of double checking controls
         instructions = (
             "- draw walls with drag\n"
-            "- place spikes and switches with click\n"
+            "- place spikes, switches, panels and papers with click\n"
             "- place doors by clicking a wall edge\n"
             "- save levels as map-1.txt, map-2.txt and so on\n"
             "- floor and ceiling are generated automatically on save\n"
-            "- door = exit to next level, switch = activate objective\n\n"
+            "- door can be switch / panel / both\n\n"
             "Mouse:\n"
             "LMB drag = create wall\n"
-            "LMB click = place spike/switch/spawn or attach door\n"
+            "LMB click = place spike/switch/panel/paper/spawn or attach door\n"
             "RMB = delete object under cursor\n"
             "MMB drag = move screen\n"
             "Wheel = zoom\n\n"
@@ -167,7 +173,9 @@ class MapEditor:
             "2 = spike\n"
             "3 = switch\n"
             "4 = door\n"
-            "5 = spawn\n"
+            "5 = panel\n"
+            "6 = paper\n"
+            "7 = spawn\n"
             "Q = select\n"
             "Delete = delete selected wall\n"
             "Ctrl+S = save\n"
@@ -178,7 +186,11 @@ class MapEditor:
             "floor ... (auto)\n"
             "ceiling ... (auto)\n"
             "switch x y z\n"
-            "door x y z axis(x/z)\n"
+            "panel x y z code\n"
+            "paper x y z symbol\n"
+            "door x y z axis\n"
+            "door x y z axis panel code [panelIndex]\n"
+            "door x y z axis both code [panelIndex]\n"
             "spike x y z\n"
             "wall ...\n"
         )
@@ -211,7 +223,9 @@ class MapEditor:
         self.root.bind("<KeyPress-2>", lambda e: self.set_tool("spike"))
         self.root.bind("<KeyPress-3>", lambda e: self.set_tool("switch"))
         self.root.bind("<KeyPress-4>", lambda e: self.set_tool("door"))
-        self.root.bind("<KeyPress-5>", lambda e: self.set_tool("spawn"))
+        self.root.bind("<KeyPress-5>", lambda e: self.set_tool("panel"))
+        self.root.bind("<KeyPress-6>", lambda e: self.set_tool("paper"))
+        self.root.bind("<KeyPress-7>", lambda e: self.set_tool("spawn"))
         self.root.bind("<KeyPress-q>", lambda e: self.set_tool("select"))
         self.root.bind("<Delete>", self.delete_selected)
         self.root.bind("<Control-s>", lambda e: self.save_map())
@@ -317,16 +331,40 @@ class MapEditor:
         self.canvas.create_line(sx, sy + 8, sx, sy - 8, fill=SWITCH_COLOR, width=3)
         self.canvas.create_oval(sx - SWITCH_SIZE, sy - SWITCH_SIZE, sx + SWITCH_SIZE, sy + SWITCH_SIZE, fill=SWITCH_COLOR, outline="white", width=2)
 
-    def draw_door_icon(self, sx, sy, axis):
+    def draw_panel_icon(self, sx, sy):
+        self.canvas.create_rectangle(
+            sx - PANEL_SIZE, sy - PANEL_SIZE,
+            sx + PANEL_SIZE, sy + PANEL_SIZE,
+            fill=PANEL_COLOR, outline="white", width=2
+        )
+        self.canvas.create_line(sx - 5, sy, sx + 5, sy, fill="#222222", width=2)
+        self.canvas.create_line(sx, sy - 5, sx, sy + 5, fill="#222222", width=2)
+
+    def draw_paper_icon(self, sx, sy):
+        self.canvas.create_rectangle(
+            sx - PAPER_SIZE, sy - PAPER_SIZE,
+            sx + PAPER_SIZE, sy + PAPER_SIZE,
+            fill=PAPER_COLOR, outline="#ffffff", width=2
+        )
+        self.canvas.create_line(sx - 4, sy - 2, sx + 4, sy - 2, fill="#333333", width=2)
+        self.canvas.create_line(sx - 4, sy + 2, sx + 4, sy + 2, fill="#333333", width=2)
+
+    def draw_door_icon(self, sx, sy, axis, door_kind="switch"):
+        color = DOOR_COLOR
+        if door_kind == "panel":
+            color = PANEL_COLOR
+        elif door_kind == "both":
+            color = "#ff8844"
+
         w = DOOR_HALF_WIDTH * GRID_SIZE * self.zoom
         if axis == "z":
-            self.canvas.create_line(sx - 18, sy - w, sx + 12, sy - w, fill=DOOR_COLOR, width=3)
-            self.canvas.create_line(sx - 18, sy + w, sx + 12, sy + w, fill=DOOR_COLOR, width=3)
-            self.canvas.create_line(sx - 18, sy - w, sx - 18, sy + w, fill=DOOR_COLOR, width=3)
+            self.canvas.create_line(sx - 18, sy - w, sx + 12, sy - w, fill=color, width=3)
+            self.canvas.create_line(sx - 18, sy + w, sx + 12, sy + w, fill=color, width=3)
+            self.canvas.create_line(sx - 18, sy - w, sx - 18, sy + w, fill=color, width=3)
         else:
-            self.canvas.create_line(sx - w, sy + 12, sx - w, sy - 18, fill=DOOR_COLOR, width=3)
-            self.canvas.create_line(sx + w, sy + 12, sx + w, sy - 18, fill=DOOR_COLOR, width=3)
-            self.canvas.create_line(sx - w, sy - 18, sx + w, sy - 18, fill=DOOR_COLOR, width=3)
+            self.canvas.create_line(sx - w, sy + 12, sx - w, sy - 18, fill=color, width=3)
+            self.canvas.create_line(sx + w, sy + 12, sx + w, sy - 18, fill=color, width=3)
+            self.canvas.create_line(sx - w, sy - 18, sx + w, sy - 18, fill=color, width=3)
 
     def redraw(self):
         """Clear and redraw the entire canvas (to reset/update stuff)"""
@@ -362,10 +400,29 @@ class MapEditor:
             self.draw_switch_icon(sx, sy)
             self.canvas.create_text(sx + 14, sy - 12, text="SWITCH", fill=SWITCH_COLOR, anchor="w", font=("Segoe UI", 9, "bold"))
 
+        for panel in self.panels:
+            sx, sy = self.world_to_screen(panel["x"], panel["z"])
+            self.draw_panel_icon(sx, sy)
+            code = panel.get("code", "")
+            self.canvas.create_text(sx + 14, sy - 12, text=f'PANEL {code}', fill=PANEL_COLOR, anchor="w", font=("Segoe UI", 9, "bold"))
+
+        for paper in self.papers:
+            sx, sy = self.world_to_screen(paper["x"], paper["z"])
+            self.draw_paper_icon(sx, sy)
+            symbol = paper.get("symbol", "?")
+            self.canvas.create_text(sx + 14, sy - 12, text=f'PAPER {symbol}', fill=PAPER_COLOR, anchor="w", font=("Segoe UI", 9, "bold"))
+
         for door in self.doors:
             sx, sy = self.world_to_screen(door["x"], door["z"])
-            self.draw_door_icon(sx, sy, door.get("axis", "x"))
-            self.canvas.create_text(sx + 16, sy - 24, text=f'DOOR {door.get("axis", "x").upper()}', fill=DOOR_COLOR, anchor="w", font=("Segoe UI", 9, "bold"))
+            axis = door.get("axis", "x")
+            door_kind = door.get("requirement", "switch")
+            self.draw_door_icon(sx, sy, axis, door_kind)
+            label = f'DOOR {axis.upper()} {door_kind.upper()}'
+            if door_kind in ("panel", "both"):
+                label += f' {door.get("code", "")}'
+                if door.get("panelIndex", -1) >= 0:
+                    label += f' P{door["panelIndex"]}'
+            self.canvas.create_text(sx + 16, sy - 24, text=label, fill="white", anchor="w", font=("Segoe UI", 9, "bold"))
 
         spawn_sx, spawn_sy = self.world_to_screen(self.spawn[0], self.spawn[2])
         self.canvas.create_oval(spawn_sx - 7, spawn_sy - 7, spawn_sx + 7, spawn_sy + 7, fill="#ffcc00", outline="white", width=2)
@@ -433,6 +490,50 @@ class MapEditor:
             f"maxZ: {obj['maxZ']:.2f}\n"
         ))
 
+    def ask_door_settings(self):
+        requirement = simpledialog.askstring(
+            "Door type",
+            "Door requirement type:\nType one of: switch, panel, both",
+            parent=self.root
+        )
+        if requirement is None:
+            return None
+        requirement = requirement.strip().lower()
+        if requirement not in ("switch", "panel", "both"):
+            messagebox.showerror("Invalid door type", "Door type must be: switch, panel or both")
+            return None
+
+        code = ""
+        panel_index = -1
+
+        if requirement in ("panel", "both"):
+            code = simpledialog.askstring(
+                "Door code",
+                "Enter code for this door (example: 1234)",
+                parent=self.root
+            )
+            if code is None or code == "":
+                messagebox.showerror("Invalid code", "Panel/both door needs a code")
+                return None
+
+            panel_index_text = simpledialog.askstring(
+                "Panel index",
+                "Optional panel index for this door.\nUse 0, 1, 2... or leave blank for any panel.",
+                parent=self.root
+            )
+            if panel_index_text:
+                try:
+                    panel_index = int(panel_index_text)
+                except ValueError:
+                    messagebox.showerror("Invalid panel index", "Panel index must be an integer")
+                    return None
+
+        return {
+            "requirement": requirement,
+            "code": code,
+            "panelIndex": panel_index
+        }
+
     def on_left_down(self, event):
         self.read_settings()
         wx, wz = self.screen_to_world(event.x, event.y)
@@ -457,19 +558,68 @@ class MapEditor:
             self.redraw()
             return
 
+        if self.current_tool == "panel":
+            code = simpledialog.askstring(
+                "Panel code",
+                "Enter code for this panel (example: 1234).\nYou can leave it blank if you want.",
+                parent=self.root
+            )
+            if code is None:
+                return
+            self.panels.append({
+                "type": "panel",
+                "x": float(wx),
+                "y": self.floor_y + 0.05,
+                "z": float(wz),
+                "code": code
+            })
+            self.set_status(f"Created panel at ({wx}, {self.floor_y + 0.05:.2f}, {wz})")
+            self.redraw()
+            return
+
+        if self.current_tool == "paper":
+            symbol = simpledialog.askstring(
+                "Paper symbol",
+                "Enter paper symbol / digit (example: 1)",
+                parent=self.root
+            )
+            if symbol is None or symbol == "":
+                return
+            self.papers.append({
+                "type": "paper",
+                "x": float(wx),
+                "y": self.floor_y + 0.05,
+                "z": float(wz),
+                "symbol": symbol
+            })
+            self.set_status(f"Created paper at ({wx}, {self.floor_y + 0.05:.2f}, {wz})")
+            self.redraw()
+            return
+
         if self.current_tool == "door":
             placement = self.find_nearest_wall_face(wx, wz)
             if placement is None:
                 self.set_status("Door must be placed on a wall edge")
                 return
+
+            door_settings = self.ask_door_settings()
+            if door_settings is None:
+                return
+
             self.doors.append({
                 "type": "door",
                 "x": placement["x"],
                 "y": placement["y"],
                 "z": placement["z"],
                 "axis": placement["axis"],
+                "requirement": door_settings["requirement"],
+                "code": door_settings["code"],
+                "panelIndex": door_settings["panelIndex"],
             })
-            self.set_status(f'Created {placement["axis"].upper()} door at ({placement["x"]:.2f}, {placement["y"]:.2f}, {placement["z"]:.2f})')
+            self.set_status(
+                f'Created {door_settings["requirement"].upper()} door at '
+                f'({placement["x"]:.2f}, {placement["y"]:.2f}, {placement["z"]:.2f})'
+            )
             self.redraw()
             return
 
@@ -595,6 +745,8 @@ class MapEditor:
         for collection, name, radius in [
             (self.spikes, "spike", SPIKE_PICK_RADIUS),
             (self.switches, "switch", POINT_PICK_RADIUS),
+            (self.panels, "panel", POINT_PICK_RADIUS),
+            (self.papers, "paper", POINT_PICK_RADIUS),
             (self.doors, "door", POINT_PICK_RADIUS),
         ]:
             idx = self.canvas_pick_point(collection, event.x, event.y, radius)
@@ -666,6 +818,8 @@ class MapEditor:
         self.spikes.clear()
         self.switches.clear()
         self.doors.clear()
+        self.panels.clear()
+        self.papers.clear()
         self.spawn = [0.0, 1.55, 7.0]
         self.selected_index = None
         self.update_selected_info()
@@ -691,6 +845,8 @@ class MapEditor:
             self.spikes.clear()
             self.switches.clear()
             self.doors.clear()
+            self.panels.clear()
+            self.papers.clear()
             with open(path, "r", encoding="utf-8") as f:
                 for raw in f:
                     line = raw.strip()
@@ -713,11 +869,44 @@ class MapEditor:
                         self.spikes.append({"type": "spike", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3])})
                     elif parts[0] == "switch" and len(parts) >= 4:
                         self.switches.append({"type": "switch", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3])})
+                    elif parts[0] == "panel" and len(parts) >= 4:
+                        code = parts[4] if len(parts) >= 5 else ""
+                        self.panels.append({"type": "panel", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3]), "code": code})
+                    elif parts[0] == "paper" and len(parts) >= 5:
+                        self.papers.append({"type": "paper", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3]), "symbol": parts[4]})
                     elif parts[0] == "door" and len(parts) >= 4:
                         axis = parts[4].lower() if len(parts) >= 5 else "x"
                         if axis not in ("x", "z"):
                             axis = "x"
-                        self.doors.append({"type": "door", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3]), "axis": axis})
+
+                        requirement = "switch"
+                        code = ""
+                        panel_index = -1
+
+                        if len(parts) >= 6:
+                            req_token = parts[5].lower()
+                            if req_token in ("panel", "both"):
+                                requirement = req_token
+                                if len(parts) >= 7:
+                                    code = parts[6]
+                                if len(parts) >= 8:
+                                    try:
+                                        panel_index = int(parts[7])
+                                    except ValueError:
+                                        panel_index = -1
+                            else:
+                                requirement = "switch"
+
+                        self.doors.append({
+                            "type": "door",
+                            "x": float(parts[1]),
+                            "y": float(parts[2]),
+                            "z": float(parts[3]),
+                            "axis": axis,
+                            "requirement": requirement,
+                            "code": code,
+                            "panelIndex": panel_index
+                        })
             self.selected_index = None
             self.update_selected_info()
             self.file_var.set(f"File: {path}")
@@ -773,9 +962,26 @@ class MapEditor:
                     f.write(f'{obj["type"]} {obj["minX"]:.2f} {obj["minY"]:.2f} {obj["minZ"]:.2f} {obj["maxX"]:.2f} {obj["maxY"]:.2f} {obj["maxZ"]:.2f}\n')
                 for obj in self.switches:
                     f.write(f'switch {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f}\n')
+                for obj in self.panels:
+                    if obj.get("code", ""):
+                        f.write(f'panel {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f} {obj["code"]}\n')
+                    else:
+                        f.write(f'panel {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f}\n')
+                for obj in self.papers:
+                    f.write(f'paper {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f} {obj["symbol"]}\n')
                 for obj in self.doors:
                     axis = obj.get("axis", "x")
-                    f.write(f'door {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f} {axis}\n')
+                    requirement = obj.get("requirement", "switch")
+                    code = obj.get("code", "")
+                    panel_index = obj.get("panelIndex", -1)
+
+                    if requirement == "switch":
+                        f.write(f'door {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f} {axis}\n')
+                    elif panel_index >= 0:
+                        f.write(f'door {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f} {axis} {requirement} {code} {panel_index}\n')
+                    else:
+                        f.write(f'door {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f} {axis} {requirement} {code}\n')
+
                 for obj in self.spikes:
                     f.write(f'spike {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f}\n')
                 for obj in self.boxes:
