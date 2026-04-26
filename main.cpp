@@ -1,7 +1,9 @@
+//to-do: rewrite all comments
 // SFML for window creation, input, and 2D rendering (HUD)
 // OpenGL and GLU for 3D rendering
 #include <SFML/Window.hpp>
 #include <SFML/Graphics.hpp>
+#include <SFML/Audio.hpp>
 #include <SFML/OpenGL.hpp>
 #include <GL/glu.h>
 
@@ -116,6 +118,18 @@ struct BatteryPickup {
     float chargeAmount = 30.f;
 };
 
+struct Stalker {
+    Vec3 pos;
+    Vec3 initialPos;
+    bool active = true;
+    bool alerted = false;
+    float revealTimer = 0.f;
+    float alertVisualTimer = 0.f;
+    float speedPatrol = 0.0f;
+    float speedChase = 2.35f;
+    float killRadius = 0.48f;
+};
+
 struct Door {
     Vec3 pos;
     bool open = false;
@@ -141,6 +155,7 @@ public:
     std::vector<Panel> panels;
     std::vector<Paper> papers;
     std::vector<BatteryPickup> batteries;
+    std::vector<Stalker> stalkers;
     Vec3 spawn{0.f, 1.55f, 7.f}; // default spawn point (eye height ~1.55)
 
     // helper to create a WorldBox
@@ -196,6 +211,17 @@ public:
         batteries.push_back(b);
     }
 
+    void addStalker(const Vec3& pos) {
+        Stalker s;
+        s.pos = pos;
+        s.initialPos = pos;
+        s.active = true;
+        s.alerted = false;
+        s.revealTimer = 0.f;
+        s.alertVisualTimer = 0.f;
+        stalkers.push_back(s);
+    }
+
     void addDoor(const Vec3& pos,
                  char axis = 'x',
                  DoorRequirement requirement = DoorRequirement::SwitchOnly,
@@ -222,6 +248,7 @@ public:
         panels.clear();
         papers.clear();
         batteries.clear();
+        stalkers.clear();
         int id = 0;
         addBox(id++, "floor",   {-8.f, -0.5f, -18.f}, {8.f, 0.f, 10.f});
         addBox(id++, "ceiling", {-8.f, 2.15f, -18.f}, {8.f, 2.45f, 10.f});
@@ -243,6 +270,7 @@ public:
 
         addBattery({-6.3f, 0.05f, 1.8f}, 25.f);
         addBattery({5.2f, 0.05f, -10.8f}, 30.f);
+        addStalker({4.8f, 0.05f, 2.5f});
 
         addPanel({-1.2f, 0.05f, -15.2f}, "1234");
         addDoor({0.f, 0.05f, -16.2f}, 'x', DoorRequirement::SwitchAndPanel, "1234", 0);
@@ -264,6 +292,7 @@ public:
         panels.clear();
         papers.clear();
         batteries.clear();
+        stalkers.clear();
         std::string line;
         int id = 0;
 
@@ -308,6 +337,15 @@ public:
                 b.collected = false;
                 b.revealTimer = 0.f;
                 batteries.push_back(b);
+            } else if (token == "stalker") {
+                Stalker s;
+                iss >> s.pos.x >> s.pos.y >> s.pos.z;
+                s.initialPos = s.pos;
+                s.active = true;
+                s.alerted = false;
+                s.revealTimer = 0.f;
+                s.alertVisualTimer = 0.f;
+                stalkers.push_back(s);
             } else if (token == "door") {
                 Door d;
                 std::string axisToken;
@@ -517,6 +555,21 @@ static void updateBatteryReveal(std::vector<BatteryPickup>& batteries, float dt)
     }
 }
 
+static void updateStalkerReveal(std::vector<Stalker>& stalkers, float dt) {
+    for (auto& stalker : stalkers) {
+        if (stalker.revealTimer > 0.f) {
+            stalker.revealTimer = std::max(0.f, stalker.revealTimer - dt);
+        }
+        if (stalker.alertVisualTimer > 0.f) {
+            stalker.alertVisualTimer = std::max(0.f, stalker.alertVisualTimer - dt);
+        }
+        if (stalker.revealTimer <= 0.f) {
+            stalker.alerted = false;
+            stalker.alertVisualTimer = 0.f;
+        }
+    }
+}
+
 static bool pointNearSwitch(const Vec3& p, const Switch& sw) {
     float dx = p.x - sw.pos.x;
     float dy = p.y - (sw.pos.y + 0.35f);
@@ -543,6 +596,13 @@ static bool pointNearBattery(const Vec3& p, const BatteryPickup& battery) {
     float dy = p.y - (battery.pos.y + 0.18f);
     float dz = p.z - battery.pos.z;
     return dx * dx + dy * dy + dz * dz <= 0.30f * 0.30f;
+}
+
+static bool pointNearStalker(const Vec3& p, const Stalker& stalker) {
+    float dx = p.x - stalker.pos.x;
+    float dy = p.y - (stalker.pos.y + 0.95f);
+    float dz = p.z - stalker.pos.z;
+    return dx * dx + dy * dy + dz * dz <= 0.55f * 0.55f;
 }
 
 static void getDoorHalfExtents(const Door& door, float& halfX, float& halfZ) {
@@ -591,6 +651,40 @@ static bool isNearBatteryPickup(const Vec3& pos, const BatteryPickup& battery) {
     float dz = pos.z - battery.pos.z;
     float distSq = dx * dx + dz * dz;
     return distSq <= 1.1f * 1.1f;
+}
+
+static bool isNearStalkerAlert(const Vec3& pos, const Stalker& stalker, float radius) {
+    float dx = pos.x - stalker.pos.x;
+    float dz = pos.z - stalker.pos.z;
+    float distSq = dx * dx + dz * dz;
+    return distSq <= radius * radius;
+}
+
+static bool collidesWithStalker(const Vec3& pos, float radius, const Stalker& stalker) {
+    if (!stalker.active) return false;
+    float dx = pos.x - stalker.pos.x;
+    float dz = pos.z - stalker.pos.z;
+    float hitRadius = radius + stalker.killRadius;
+    return dx * dx + dz * dz <= hitRadius * hitRadius;
+}
+
+static bool collidesWithAnyStalker(const Vec3& pos, float radius, const std::vector<Stalker>& stalkers) {
+    for (const auto& stalker : stalkers) {
+        if (collidesWithStalker(pos, radius, stalker)) return true;
+    }
+    return false;
+}
+
+static float getNearestStalkerDistance(const Vec3& pos, const std::vector<Stalker>& stalkers) {
+    float best = 9999.f;
+    for (const auto& stalker : stalkers) {
+        if (!stalker.active) continue;
+        float dx = pos.x - stalker.pos.x;
+        float dz = pos.z - stalker.pos.z;
+        float d = std::sqrt(dx * dx + dz * dz);
+        best = std::min(best, d);
+    }
+    return best;
 }
 
 static bool isNearDoorInteraction(const Vec3& pos, const Door& door) {
@@ -689,6 +783,7 @@ struct ScanPoint {
 
 class PointCloud {
 public:
+    bool alertedStalkerThisScan = false;
     std::vector<ScanPoint> points;
     // update lifetimes and remove expired points that decayed
     void update(float dt) {
@@ -722,6 +817,7 @@ public:
               std::vector<Panel>& panels,
               std::vector<Paper>& papers,
               std::vector<BatteryPickup>& batteries,
+              std::vector<Stalker>& stalkers,
               int rays, float coneDeg, float maxDist) {
         float coneRad = coneDeg * 3.1415926f / 180.f;
         float tanCone = std::tan(coneRad * 0.5f);
@@ -738,6 +834,8 @@ public:
         const float panelRevealLife = 1.7f;
         const float paperRevealLife = 1.7f;
         const float batteryRevealLife = 1.7f;
+        const float stalkerRevealLife = 1.95f;
+        alertedStalkerThisScan = false;
 
         for (int i = 0; i < rays; ++i) {
             // random sample inside a circular cone footprint
@@ -791,6 +889,24 @@ public:
                     if (battery.collected) continue;
                     if (pointNearBattery(p, battery)) {
                         battery.revealTimer = std::max(battery.revealTimer, batteryRevealLife);
+                    }
+                }
+
+                for (auto& stalker : stalkers) {
+                    if (!stalker.active) continue;
+                    if (pointNearStalker(p, stalker)) {
+                        stalker.revealTimer = std::max(stalker.revealTimer, stalkerRevealLife);
+
+                        float dx = p.x - stalker.pos.x;
+                        float dz = p.z - stalker.pos.z;
+                        float hitDistSq = dx * dx + dz * dz;
+                        bool strongScanHit = hitDistSq < 0.30f * 0.30f;
+
+                        if (strongScanHit && !stalker.alerted) {
+                            stalker.alerted = true;
+                            stalker.alertVisualTimer = 1.15f;
+                            alertedStalkerThisScan = true;
+                        }
                     }
                 }
 
@@ -1105,6 +1221,374 @@ static void renderBatteries(const std::vector<BatteryPickup>& batteries) {
     glDisable(GL_BLEND);
 }
 
+static void renderStalkers(const std::vector<Stalker>& stalkers) {
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glPointSize(4.6f);
+    glBegin(GL_POINTS);
+
+    for (const auto& stalker : stalkers) {
+        if (!stalker.active) continue;
+        if (stalker.revealTimer <= 0.f && !stalker.alerted) continue;
+
+        float revealFade = clampf(stalker.revealTimer / 1.95f, 0.f, 1.f);
+        float alertFade = stalker.alerted ? 1.f : clampf(stalker.alertVisualTimer / 1.15f, 0.f, 1.f);
+        float alpha = std::max(revealFade, alertFade);
+        float twitch = 0.5f + 0.5f * std::sin(stalker.pos.x * 8.2f + stalker.pos.z * 6.1f + alpha * 15.0f);
+
+        float x = stalker.pos.x;
+        float z = stalker.pos.z;
+        float baseY = stalker.pos.y + 0.01f;
+
+        float fleshAlpha = 0.18f + 0.58f * alpha;
+        float boneAlpha = 0.14f + 0.50f * alpha;
+        float faceAlpha = 0.26f + 0.66f * alpha;
+
+        // pelvis and lower abdomen
+        glColor4f(0.10f + 0.26f * alertFade, 0.05f + 0.12f * twitch, 0.05f + 0.10f * revealFade, fleshAlpha);
+        for (int iy = 0; iy <= 8; ++iy) {
+            float t = (float)iy / 8.f;
+            float y = baseY + 0.28f + 0.20f * t;
+            float halfW = 0.12f + 0.04f * std::sin(t * 3.1415926f);
+            glVertex3f(x - halfW, y, z + 0.02f * t);
+            glVertex3f(x + halfW, y, z + 0.02f * t);
+            glVertex3f(x, y, z - 0.10f + 0.03f * t);
+        }
+
+        // full torso / chest mass
+        glColor4f(0.12f + 0.32f * alertFade, 0.05f + 0.10f * twitch, 0.05f + 0.10f * revealFade, fleshAlpha);
+        for (int iy = 0; iy <= 22; ++iy) {
+            float t = (float)iy / 22.f;
+            float y = baseY + 0.44f + 0.94f * t;
+            float chest = std::sin(t * 3.1415926f);
+            float hunch = 0.12f * chest;
+            float halfW = 0.14f + 0.16f * chest;
+            glVertex3f(x - halfW, y, z + hunch);
+            glVertex3f(x + halfW, y, z + hunch);
+            glVertex3f(x - halfW * 0.46f, y, z - 0.12f + hunch * 0.4f);
+            glVertex3f(x + halfW * 0.46f, y, z + 0.12f + hunch * 0.4f);
+        }
+
+        // exposed ribs / spine hints
+        glColor4f(0.48f + 0.34f * alertFade, 0.08f + 0.06f * twitch, 0.08f + 0.06f * revealFade, boneAlpha);
+        for (int i = 0; i <= 10; ++i) {
+            float t = (float)i / 10.f;
+            float y = baseY + 0.60f + 0.58f * t;
+            float rib = 0.08f + 0.09f * (1.f - std::fabs(t - 0.5f) * 1.8f);
+            glVertex3f(x - rib, y, z + 0.04f);
+            glVertex3f(x + rib, y, z + 0.04f);
+            glVertex3f(x, y, z - 0.12f);
+        }
+
+        // long neck
+        glColor4f(0.22f + 0.22f * alertFade, 0.08f + 0.08f * twitch, 0.08f + 0.08f * revealFade, boneAlpha);
+        for (int i = 0; i <= 12; ++i) {
+            float t = (float)i / 12.f;
+            float y = baseY + 1.22f + 0.26f * t;
+            glVertex3f(x, y, z + 0.10f + 0.03f * t);
+            glVertex3f(x - 0.035f, y, z + 0.09f + 0.03f * t);
+            glVertex3f(x + 0.035f, y, z + 0.09f + 0.03f * t);
+        }
+
+        // full skull / head volume
+        glColor4f(0.22f + 0.26f * alertFade, 0.10f + 0.08f * twitch, 0.10f + 0.08f * revealFade, faceAlpha);
+        for (int iy = 0; iy <= 10; ++iy) {
+            float ty = (float)iy / 10.f;
+            float y = baseY + 1.44f + 0.26f * ty;
+            float ring = std::sin(ty * 3.1415926f);
+            float halfW = 0.08f + 0.10f * ring;
+            float halfD = 0.06f + 0.08f * ring;
+            for (int ia = 0; ia < 14; ++ia) {
+                float a = 2.f * 3.1415926f * (float)ia / 14.f;
+                glVertex3f(x + std::cos(a) * halfW, y, z + 0.12f + std::sin(a) * halfD);
+            }
+        }
+
+        // jaws / mouth cavity
+        glColor4f(0.90f + 0.10f * alertFade, 0.05f + 0.35f * alertFade, 0.05f + 0.25f * alertFade, 0.18f + 0.76f * alpha);
+        for (int i = 0; i <= 8; ++i) {
+            float t = (float)i / 8.f;
+            glVertex3f(x - 0.09f + 0.18f * t, baseY + 1.46f - 0.08f * std::sin(t * 3.1415926f), z + 0.24f);
+            glVertex3f(x - 0.06f + 0.12f * t, baseY + 1.41f - 0.05f * std::sin(t * 3.1415926f), z + 0.27f);
+        }
+
+        // eyes
+        glColor4f(1.0f, 0.02f + 0.72f * alertFade, 0.02f + 0.55f * alertFade, 0.24f + 0.76f * alpha);
+        glVertex3f(x - 0.055f, baseY + 1.58f, z + 0.22f);
+        glVertex3f(x + 0.055f, baseY + 1.58f, z + 0.22f);
+        glVertex3f(x - 0.03f, baseY + 1.55f, z + 0.24f);
+        glVertex3f(x + 0.03f, baseY + 1.55f, z + 0.24f);
+
+        // horns / crown spikes
+        glColor4f(0.55f + 0.30f * alertFade, 0.08f, 0.08f, boneAlpha);
+        for (int i = 0; i <= 8; ++i) {
+            float t = (float)i / 8.f;
+            glVertex3f(x - 0.10f - 0.10f * t, baseY + 1.66f + 0.10f * t, z + 0.10f - 0.02f * t);
+            glVertex3f(x + 0.10f + 0.10f * t, baseY + 1.66f + 0.10f * t, z + 0.10f - 0.02f * t);
+        }
+
+        // huge shoulders and upper back spikes
+        glColor4f(0.40f + 0.42f * alertFade, 0.08f + 0.08f * twitch, 0.08f + 0.08f * revealFade, boneAlpha);
+        for (int i = 0; i <= 10; ++i) {
+            float t = (float)i / 10.f;
+            float y = baseY + 1.08f + 0.18f * t;
+            glVertex3f(x - 0.22f - 0.10f * t, y, z - 0.02f);
+            glVertex3f(x + 0.22f + 0.10f * t, y, z - 0.02f);
+            glVertex3f(x, y + 0.06f, z - 0.18f - 0.10f * t);
+        }
+
+        // full left and right arms
+        glColor4f(0.14f + 0.34f * alertFade, 0.06f + 0.10f * twitch, 0.06f + 0.10f * revealFade, fleshAlpha);
+        for (int i = 0; i <= 16; ++i) {
+            float t = (float)i / 16.f;
+            float y = baseY + 1.12f - 0.54f * t;
+            glVertex3f(x - 0.20f - 0.16f * t, y, z + 0.02f * t);
+            glVertex3f(x + 0.20f + 0.16f * t, y, z - 0.02f * t);
+        }
+        for (int i = 0; i <= 14; ++i) {
+            float t = (float)i / 14.f;
+            float y = baseY + 0.58f - 0.34f * t;
+            glVertex3f(x - 0.36f - 0.10f * t, y, z + 0.03f + 0.03f * t);
+            glVertex3f(x + 0.36f + 0.10f * t, y, z - 0.03f - 0.03f * t);
+        }
+
+        // claws / hands
+        glColor4f(0.92f, 0.08f + 0.34f * alertFade, 0.08f + 0.22f * alertFade, 0.20f + 0.65f * alpha);
+        for (int i = 0; i <= 5; ++i) {
+            float t = (float)i / 5.f;
+            glVertex3f(x - 0.48f - 0.08f * t, baseY + 0.20f - 0.05f * t, z + 0.07f + 0.03f * t);
+            glVertex3f(x - 0.48f - 0.08f * t, baseY + 0.20f - 0.05f * t, z + 0.02f * t);
+            glVertex3f(x + 0.48f + 0.08f * t, baseY + 0.20f - 0.05f * t, z - 0.07f - 0.03f * t);
+            glVertex3f(x + 0.48f + 0.08f * t, baseY + 0.20f - 0.05f * t, z - 0.02f * t);
+        }
+
+        // full thighs
+        glColor4f(0.12f + 0.28f * alertFade, 0.06f + 0.10f * twitch, 0.06f + 0.10f * revealFade, fleshAlpha);
+        for (int i = 0; i <= 12; ++i) {
+            float t = (float)i / 12.f;
+            glVertex3f(x - 0.10f - 0.04f * t, baseY + 0.42f - 0.28f * t, z + 0.05f * t);
+            glVertex3f(x + 0.10f + 0.04f * t, baseY + 0.42f - 0.28f * t, z + 0.05f * t);
+        }
+
+        // reversed knees / shins
+        glColor4f(0.16f + 0.24f * alertFade, 0.08f + 0.08f * twitch, 0.08f + 0.08f * revealFade, boneAlpha);
+        for (int i = 0; i <= 12; ++i) {
+            float t = (float)i / 12.f;
+            glVertex3f(x - 0.14f - 0.10f * t, baseY + 0.14f - 0.18f * t, z + 0.06f + 0.10f * t);
+            glVertex3f(x + 0.14f + 0.10f * t, baseY + 0.14f - 0.18f * t, z + 0.06f + 0.10f * t);
+        }
+
+        // feet / talons
+        glColor4f(0.92f, 0.06f + 0.26f * alertFade, 0.06f + 0.18f * alertFade, 0.16f + 0.56f * alpha);
+        for (int i = 0; i <= 6; ++i) {
+            float t = (float)i / 6.f;
+            glVertex3f(x - 0.25f - 0.06f * t, baseY - 0.05f, z + 0.18f + 0.05f * t);
+            glVertex3f(x - 0.18f - 0.06f * t, baseY - 0.05f, z + 0.14f + 0.05f * t);
+            glVertex3f(x + 0.25f + 0.06f * t, baseY - 0.05f, z + 0.18f + 0.05f * t);
+            glVertex3f(x + 0.18f + 0.06f * t, baseY - 0.05f, z + 0.14f + 0.05f * t);
+        }
+
+        // trailing spine / tail-like horror silhouette
+        glColor4f(0.42f + 0.38f * alertFade, 0.08f, 0.08f, boneAlpha);
+        for (int i = 0; i <= 16; ++i) {
+            float t = (float)i / 16.f;
+            glVertex3f(x, baseY + 0.92f - 0.62f * t, z - 0.18f - 0.22f * t);
+        }
+
+        // alert aura
+        if (stalker.alerted) {
+            glColor4f(1.0f, 0.10f, 0.10f, 0.18f + 0.66f * alertFade);
+            for (int i = 0; i < 22; ++i) {
+                float t = (float)i / 21.f;
+                glVertex3f(x - 0.30f + 0.60f * t, baseY + 1.92f + 0.05f * std::sin(t * 18.f), z + 0.03f);
+                glVertex3f(x + 0.03f * std::sin(t * 22.f), baseY + 1.90f + 0.06f * std::sin(t * 20.f), z - 0.30f + 0.60f * t);
+            }
+        }
+    }
+
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
+static void updateStalkers(std::vector<Stalker>& stalkers,
+                           const Vec3& playerPos,
+                           float playerRadius,
+                           float dt,
+                           const std::vector<WorldBox>& boxes) {
+    for (auto& stalker : stalkers) {
+        if (!stalker.active) continue;
+        if (!stalker.alerted) continue;
+        if (stalker.revealTimer <= 0.f) {
+            stalker.alerted = false;
+            stalker.alertVisualTimer = 0.f;
+            continue;
+        }
+
+        Vec3 toPlayer{playerPos.x - stalker.pos.x, 0.f, playerPos.z - stalker.pos.z};
+        float dist = lengthVec(toPlayer);
+        if (dist > 8.5f) {
+            stalker.alerted = false;
+            stalker.alertVisualTimer = 0.f;
+            continue;
+        }
+        if (dist <= 0.0001f) continue;
+
+        Vec3 dir = normalize(toPlayer);
+        float speed = stalker.speedChase;
+        if (dist < playerRadius + stalker.killRadius + 0.05f) speed *= 1.15f;
+
+        Vec3 nextPos = stalker.pos;
+        Vec3 move = dir * (speed * dt);
+        moveWithSlide(nextPos, move, 0.24f, boxes);
+        nextPos.y = stalker.pos.y;
+
+        float movedDist = lengthVec(Vec3{nextPos.x - stalker.pos.x, 0.f, nextPos.z - stalker.pos.z});
+        stalker.pos = nextPos;
+
+        if (movedDist < 0.002f && dist > 2.4f) {
+            stalker.alerted = false;
+            stalker.alertVisualTimer = 0.f;
+        }
+    }
+}
+
+static void renderParasiteOverlay(sf::RenderWindow& window, float intensity, float shakeProgress, float motionTime) {
+    if (intensity <= 0.001f) return;
+
+    const float W = (float)window.getSize().x;
+    const float H = (float)window.getSize().y;
+    float i = clampf(intensity, 0.f, 1.f);
+    float progress = clampf(shakeProgress, 0.f, 1.f);
+    float phase = motionTime * 180.f;
+    float fade = i * i * (3.f - 2.f * i);
+
+    sf::RectangleShape haze(sf::Vector2f(W, H));
+    haze.setFillColor(sf::Color(30, 8, 8, (sf::Uint8)(18 + 46 * fade)));
+    window.draw(haze);
+
+    auto drawParasite = [&](float px, float py, float scale, bool mirrored) {
+        float dir = mirrored ? -1.f : 1.f;
+
+        sf::CircleShape outer(14.f * scale, 20);
+        outer.setOrigin(14.f * scale, 14.f * scale);
+        outer.setPosition(px, py);
+        outer.setFillColor(sf::Color(185, 62, 62, (sf::Uint8)(120 + 95 * fade)));
+        window.draw(outer);
+
+        sf::CircleShape core(9.f * scale, 18);
+        core.setOrigin(9.f * scale, 9.f * scale);
+        core.setPosition(px - 2.f * dir * scale, py + 1.f * scale);
+        core.setFillColor(sf::Color(222, 110, 110, (sf::Uint8)(130 + 90 * fade)));
+        window.draw(core);
+
+        sf::CircleShape eye(2.6f * scale, 14);
+        eye.setOrigin(2.6f * scale, 2.6f * scale);
+        eye.setPosition(px + 4.2f * dir * scale, py - 2.2f * scale);
+        eye.setFillColor(sf::Color(255, 220, 220, (sf::Uint8)(140 + 80 * fade)));
+        window.draw(eye);
+
+        sf::CircleShape pupil(1.1f * scale, 12);
+        pupil.setOrigin(1.1f * scale, 1.1f * scale);
+        pupil.setPosition(px + 4.7f * dir * scale, py - 2.0f * scale);
+        pupil.setFillColor(sf::Color(90, 22, 22, (sf::Uint8)(150 + 70 * fade)));
+        window.draw(pupil);
+
+        for (int leg = 0; leg < 4; ++leg) {
+            float lt = (float)leg / 3.f;
+            for (int side = -1; side <= 1; side += 2) {
+                sf::RectangleShape nub(sf::Vector2f((6.f + 2.f * lt) * scale, 2.2f * scale));
+                nub.setOrigin(1.2f * scale, 1.1f * scale);
+                nub.setPosition(px + (lt * 6.f - 4.f) * scale, py + side * (7.f + 1.4f * lt) * scale);
+                nub.setRotation(side * (22.f + 16.f * lt));
+                nub.setFillColor(sf::Color(205, 92, 92, (sf::Uint8)(95 + 85 * fade)));
+                window.draw(nub);
+            }
+        }
+    };
+
+    int sliderCount = 10;
+    for (int n = 0; n < sliderCount; ++n) {
+        float t = (float)n / (float)sliderCount;
+        float y = 40.f + t * (H - 80.f);
+        float slide = std::fmod(phase * (0.72f + t * 0.22f) + t * 210.f, W + 180.f) - 90.f;
+        drawParasite(slide, y, 0.85f + 0.28f * fade, false);
+    }
+
+    int reverseCount = 8;
+    for (int n = 0; n < reverseCount; ++n) {
+        float t = (float)n / (float)reverseCount;
+        float y = 62.f + t * (H - 124.f);
+        float slide = W - std::fmod(phase * (0.78f + t * 0.18f) + t * 250.f, W + 200.f) + 100.f;
+        drawParasite(slide, y, 0.80f + 0.24f * fade, true);
+    }
+
+    int crawlTop = 5;
+    for (int n = 0; n < crawlTop; ++n) {
+        float t = (float)n / (float)crawlTop;
+        float x = 60.f + t * (W - 120.f);
+        float slideY = std::fmod(phase * (0.52f + 0.06f * n) + t * 70.f, 110.f) - 34.f;
+        drawParasite(x, slideY, 0.86f + 0.22f * fade, false);
+    }
+
+    sf::RectangleShape redWash(sf::Vector2f(W, H));
+    redWash.setPosition(0.f, 0.f);
+    redWash.setFillColor(sf::Color(120, 20, 20, (sf::Uint8)(10 + 42 * fade)));
+    window.draw(redWash);
+
+    sf::RectangleShape shakeBg(sf::Vector2f(180.f, 12.f));
+    shakeBg.setPosition(W - 196.f, 16.f);
+    shakeBg.setFillColor(sf::Color(28, 10, 10, (sf::Uint8)(120 + 60 * fade)));
+    window.draw(shakeBg);
+
+    sf::RectangleShape shakeFill(sf::Vector2f(180.f * progress, 12.f));
+    shakeFill.setPosition(W - 196.f, 16.f);
+    shakeFill.setFillColor(sf::Color(255, 160, 160, (sf::Uint8)(160 + 70 * fade)));
+    window.draw(shakeFill);
+}
+
+static void renderStalkerGlitch(sf::RenderWindow& window, float intensity, bool scanAlarmFlash) {
+    if (intensity <= 0.001f && !scanAlarmFlash) return;
+
+    const float W = (float)window.getSize().x;
+    const float H = (float)window.getSize().y;
+    float i = clampf(intensity, 0.f, 1.f);
+    float flash = scanAlarmFlash ? 0.45f : 0.f;
+
+    int bandCount = 6 + (int)(i * 18.f);
+    for (int b = 0; b < bandCount; ++b) {
+        float t = (float)b / (float)std::max(1, bandCount - 1);
+        float y = t * H;
+        float jitter = std::sin((t * 41.f) + i * 13.f) * (8.f + 24.f * i);
+        float bandH = 1.f + 3.f * i + (b % 3 == 0 ? 2.f : 0.f);
+        sf::RectangleShape band(sf::Vector2f(W * (0.35f + 0.55f * ((b % 5) / 4.f)), bandH));
+        band.setPosition(W * 0.08f + jitter, y + std::sin(t * 17.f) * 6.f * i);
+        sf::Uint8 alpha = (sf::Uint8)clampf(18.f + 95.f * i + 90.f * flash, 0.f, 255.f);
+        if (b % 4 == 0) band.setFillColor(sf::Color(255, 80, 80, alpha));
+        else band.setFillColor(sf::Color(235, 235, 235, alpha));
+        window.draw(band);
+    }
+
+    int noiseCount = 16 + (int)(i * 58.f);
+    for (int n = 0; n < noiseCount; ++n) {
+        float nx = (float)(std::rand() % std::max(1u, window.getSize().x));
+        float ny = (float)(std::rand() % std::max(1u, window.getSize().y));
+        float nw = 8.f + (float)(std::rand() % 34) * (0.35f + i);
+        float nh = 1.f + (float)(std::rand() % 5);
+        sf::RectangleShape px(sf::Vector2f(nw, nh));
+        px.setPosition(nx, ny);
+        sf::Uint8 alpha = (sf::Uint8)clampf(10.f + (std::rand() % 45) * (0.5f + i), 0.f, 255.f);
+        if (n % 6 == 0) px.setFillColor(sf::Color(255, 40, 40, alpha));
+        else px.setFillColor(sf::Color(255, 255, 255, alpha));
+        window.draw(px);
+    }
+
+    sf::RectangleShape vignette(sf::Vector2f(W, H));
+    vignette.setPosition(0.f, 0.f);
+    vignette.setFillColor(sf::Color(18, 0, 0, (sf::Uint8)clampf(15.f + 95.f * i + 80.f * flash, 0.f, 255.f)));
+    window.draw(vignette);
+}
+
 static void renderDoors(const std::vector<Door>& doors) {
     glDisable(GL_LIGHTING);
     glEnable(GL_BLEND);
@@ -1385,7 +1869,8 @@ static void renderSettingsMenu(sf::RenderWindow& window,
 }
 
 static void renderGameOverOverlay(sf::RenderWindow& window,
-                                  std::vector<sf::FloatRect>& boundsOut)
+                                  std::vector<sf::FloatRect>& boundsOut,
+                                  const std::string& reason)
 {
     ensureFont();
     const float W = (float)window.getSize().x;
@@ -1409,7 +1894,7 @@ static void renderGameOverOverlay(sf::RenderWindow& window,
 
     if (g_fontLoaded) {
         drawCenteredText(window, "Game Over", 44, W * 0.5f, panelTop + 72.f, sf::Color(235, 210, 210));
-        drawCenteredText(window, "You were caught by the spikes", 18, W * 0.5f, panelTop + 126.f, sf::Color(175, 175, 190));
+        drawCenteredText(window, reason, 18, W * 0.5f, panelTop + 126.f, sf::Color(175, 175, 190));
     }
 
     boundsOut.resize(2);
@@ -1672,15 +2157,59 @@ int main() {
 
     PointCloud cloud;
 
+    sf::SoundBuffer footstepBuffer;
+    sf::SoundBuffer stalkerStepBuffer;
+    sf::Sound footstepSound;
+    sf::Sound stalkerStepSound;
+    sf::Music ambienceMusic;
+    bool footstepLoaded = false;
+    bool stalkerStepLoaded = false;
+    bool ambienceLoaded = false;
+    float footstepTimer = 0.f;
+    float stalkerAudioTimer = 0.f;
+
+    footstepLoaded = footstepBuffer.loadFromFile("assets/audio/footstep.wav");
+    if (footstepLoaded) {
+        footstepSound.setBuffer(footstepBuffer);
+        footstepSound.setVolume(28.f);
+    } else {
+        std::cout << "Missing placeholder audio: assets/audio/footstep.wav";
+    }
+
+    stalkerStepLoaded = stalkerStepBuffer.loadFromFile("assets/audio/stalker.wav");
+    if (stalkerStepLoaded) {
+        stalkerStepSound.setBuffer(stalkerStepBuffer);
+        stalkerStepSound.setVolume(42.f);
+    } else {
+        std::cout << "Missing placeholder audio: assets/audio/stalker.wav";
+    }
+
+    ambienceLoaded = ambienceMusic.openFromFile("assets/audio/ambience.wav");
+    if (ambienceLoaded) {
+        ambienceMusic.setLoop(true);
+        ambienceMusic.setVolume(22.f);
+    } else {
+        std::cout << "Missing placeholder audio: assets/audio/ambience.wav";
+    }
+
     float battery = 100.f; // start with full battery
     bool localScanHeld = false; // true while left mouse button is pressed
     bool areaScanHeld = false;
+    bool parasiteActive = false;
+    float parasiteTimer = 0.f;
+    float parasiteShakeMeter = 0.f;
+    float parasiteCooldown = 7.5f;
+    float parasiteOverlay = 0.f;
+    float parasiteMotionTime = 0.f;
+    float parasiteShakeDirection = 0.f;
     bool interactPressed = false;
     bool panelMenuOpen = false;
     int activePanelIndex = -1;
     std::string panelInput;
     std::string panelMessage;
     std::string collectedCode;
+    std::string gameOverReason = "You were caught by the spikes";
+    bool scanAlarmFlash = false;
     const float passiveRecharge = 3.5f; // % per second when not scanning
     const float localScanDrain = 3.0f; // % per second while scanning
     const float areaScanDrain = 4.5f; // % per second while area scanning
@@ -1740,6 +2269,18 @@ int main() {
         battery = 100.f;
         localScanHeld = false;
         areaScanHeld = false;
+        parasiteActive = false;
+        parasiteTimer = 0.f;
+        parasiteShakeMeter = 0.f;
+        parasiteCooldown = 7.5f;
+        parasiteOverlay = 0.f;
+        parasiteMotionTime = 0.f;
+        parasiteShakeDirection = 0.f;
+        footstepTimer = 0.f;
+        stalkerAudioTimer = 0.f;
+        if (footstepSound.getStatus() == sf::Sound::Playing) footstepSound.stop();
+        if (stalkerStepSound.getStatus() == sf::Sound::Playing) stalkerStepSound.stop();
+        if (ambienceLoaded && ambienceMusic.getStatus() != sf::Music::Playing) ambienceMusic.play();
         interactPressed = false;
         panelMenuOpen = false;
         activePanelIndex = -1;
@@ -1763,11 +2304,19 @@ int main() {
             batteryPickup.collected = false;
             batteryPickup.revealTimer = 0.f;
         }
+        for (auto& stalker : map.stalkers) {
+            stalker.pos = stalker.initialPos;
+            stalker.alerted = false;
+            stalker.revealTimer = 0.f;
+            stalker.alertVisualTimer = 0.f;
+        }
         for (auto& door : map.doors) {
             door.open = false;
             door.revealTimer = 0.f;
             door.panelUnlocked = false;
         }
+        gameOverReason = "You were caught by the spikes";
+        scanAlarmFlash = false;
         updateDoorsFromProgress();
         sf::Vector2u sz = window.getSize();
         sf::Mouse::setPosition(sf::Vector2i((int)sz.x / 2, (int)sz.y / 2), window);
@@ -1775,6 +2324,7 @@ int main() {
 
     auto enterPlaying = [&]() {
         state = GameState::Playing;
+        if (ambienceLoaded && ambienceMusic.getStatus() != sf::Music::Playing) ambienceMusic.play();
         if (!panelMenuOpen) {
             window.setMouseCursorVisible(false);
             window.setMouseCursorGrabbed(true); // keep mouse inside window
@@ -1939,6 +2489,9 @@ int main() {
                         state = GameState::MainMenu;
                         localScanHeld = false;
                         areaScanHeld = false;
+                        if (footstepSound.getStatus() == sf::Sound::Playing) footstepSound.stop();
+                        if (stalkerStepSound.getStatus() == sf::Sound::Playing) stalkerStepSound.stop();
+                        if (ambienceMusic.getStatus() == sf::Music::Playing) ambienceMusic.pause();
                         window.setMouseCursorVisible(true);
                         window.setMouseCursorGrabbed(false);
                     }
@@ -1955,6 +2508,15 @@ int main() {
 
                     if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::E)
                         interactPressed = true;
+
+                    if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::P) {
+                        parasiteActive = true;
+                        parasiteTimer = 0.f;
+                        parasiteShakeMeter = 0.f;
+                        parasiteOverlay = 0.f;
+                        parasiteMotionTime = 0.f;
+                        parasiteShakeDirection = 0.f;
+                    }
                 }
             }
         }
@@ -1971,6 +2533,23 @@ int main() {
                 sf::Vector2i mousePos = sf::Mouse::getPosition(window);
                 sf::Vector2i delta = mousePos - center;
                 sf::Mouse::setPosition(center, window);
+
+                float shakeAmount = (float)(std::abs(delta.x) + std::abs(delta.y));
+                if (parasiteActive) {
+                    float horizontal = (float)delta.x;
+                    float strongMove = std::max(0.f, std::abs(horizontal) - 9.f);
+                    float dir = (horizontal > 0.f) ? 1.f : ((horizontal < 0.f) ? -1.f : 0.f);
+                    if (strongMove > 0.f && dir != 0.f) {
+                        if (parasiteShakeDirection != 0.f && dir != parasiteShakeDirection) {
+                            parasiteShakeMeter = clampf(parasiteShakeMeter + strongMove * 0.014f, 0.f, 1.35f);
+                        } else {
+                            parasiteShakeMeter = clampf(parasiteShakeMeter + strongMove * 0.0035f, 0.f, 1.35f);
+                        }
+                        parasiteShakeDirection = dir;
+                    } else {
+                        parasiteShakeMeter = std::max(0.f, parasiteShakeMeter - dt * 0.55f);
+                    }
+                }
 
                 cam.yaw += (float)delta.x * cam.mouseSens;
                 cam.pitch -= (float)delta.y * cam.mouseSens; // subtract because y increases downward
@@ -1992,6 +2571,17 @@ int main() {
 
                 if (lengthVec(move) > 0.001f) move = normalize(move) * cam.moveSpeed;
 
+                bool playerMoving = lengthVec(move) > 0.001f;
+                if (playerMoving) {
+                    footstepTimer -= dt;
+                    if (footstepLoaded && footstepTimer <= 0.f) {
+                        footstepSound.play();
+                        footstepTimer = 0.42f;
+                    }
+                } else {
+                    footstepTimer = 0.f;
+                }
+
                 // apply movement with sliding collision
                 Vec3 deltaMove = move * dt;
                 moveWithSlide(cam.pos, deltaMove, playerRadius, map.boxes);
@@ -1999,17 +2589,87 @@ int main() {
                 cam.pos.y = map.spawn.y;
             }
 
+            updateStalkers(map.stalkers, cam.pos, playerRadius, dt, map.boxes);
+
+            float nearestAlertedStalkerDist = 9999.f;
+            bool anyAlertedStalker = false;
+            for (const auto& stalker : map.stalkers) {
+                if (!stalker.active || !stalker.alerted) continue;
+                anyAlertedStalker = true;
+                float dx = cam.pos.x - stalker.pos.x;
+                float dz = cam.pos.z - stalker.pos.z;
+                float d = std::sqrt(dx * dx + dz * dz);
+                nearestAlertedStalkerDist = std::min(nearestAlertedStalkerDist, d);
+            }
+            if (anyAlertedStalker) {
+                stalkerAudioTimer -= dt;
+                float stalkerVolume = 18.f;
+                if (nearestAlertedStalkerDist < 14.f) {
+                    stalkerVolume = 18.f + (1.f - clampf((nearestAlertedStalkerDist - 1.4f) / (14.f - 1.4f), 0.f, 1.f)) * 55.f;
+                }
+                if (stalkerStepLoaded) {
+                    stalkerStepSound.setVolume(stalkerVolume);
+                    if (stalkerAudioTimer <= 0.f) {
+                        stalkerStepSound.play();
+                        stalkerAudioTimer = 0.55f;
+                    }
+                }
+            } else {
+                stalkerAudioTimer = 0.f;
+            }
+
             if (collidesWithAnySpike(cam.pos, playerRadius, map.spikes)) {
                 localScanHeld = false;
                 areaScanHeld = false;
                 interactPressed = false;
                 panelMenuOpen = false;
+                gameOverReason = "You were caught by the spikes";
+                state = GameState::GameOver;
+                window.setMouseCursorVisible(true);
+                window.setMouseCursorGrabbed(false);
+            }
+
+            if (state == GameState::Playing && collidesWithAnyStalker(cam.pos, playerRadius, map.stalkers)) {
+                localScanHeld = false;
+                areaScanHeld = false;
+                interactPressed = false;
+                panelMenuOpen = false;
+                gameOverReason = "You were caught by the stalker";
                 state = GameState::GameOver;
                 window.setMouseCursorVisible(true);
                 window.setMouseCursorGrabbed(false);
             }
 
             if (state == GameState::Playing) {
+                parasiteCooldown = std::max(0.f, parasiteCooldown - dt);
+                if (!parasiteActive && parasiteCooldown <= 0.f) {
+                    float eventChance = dt * 0.018f;
+                    if (((float)std::rand() / (float)RAND_MAX) < eventChance) {
+                        parasiteActive = true;
+                        parasiteTimer = 0.f;
+                        parasiteShakeMeter = 0.f;
+                        parasiteOverlay = 0.f;
+                        parasiteMotionTime = 0.f;
+                        parasiteShakeDirection = 0.f;
+                    }
+                }
+
+                if (parasiteActive) {
+                    parasiteTimer += dt;
+                    parasiteMotionTime += dt;
+                    battery = std::max(0.f, battery - (8.5f * dt));
+                    parasiteOverlay = std::min(1.f, parasiteOverlay + dt * 1.2f);
+                    if (parasiteShakeMeter >= 1.f) {
+                        parasiteActive = false;
+                        parasiteTimer = 0.f;
+                        parasiteShakeMeter = 0.f;
+                        parasiteCooldown = 14.f + ((float)std::rand() / (float)RAND_MAX) * 12.f;
+                        parasiteShakeDirection = 0.f;
+                    }
+                } else {
+                    parasiteOverlay = std::max(0.f, parasiteOverlay - dt * 0.9f);
+                }
+
                 for (auto& paper : map.papers) {
                     if (!paper.collected && isNearPaperPickup(cam.pos, paper)) {
                         paper.collected = true;
@@ -2066,10 +2726,10 @@ int main() {
             bool scanning = state == GameState::Playing && !panelMenuOpen && (localScanHeld || areaScanHeld) && battery > 0.f;
             if (scanning) {
                 if (areaScanHeld) {
-                    cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, map.panels, map.papers, map.batteries, 150, 120.f, 12.f);
+                    cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, map.panels, map.papers, map.batteries, map.stalkers, 150, 120.f, 12.f);
                     battery -= areaScanDrain * dt;
                 } else {
-                    cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, map.panels, map.papers, map.batteries, 90, 32.f, 10.f);
+                    cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, map.panels, map.papers, map.batteries, map.stalkers, 90, 32.f, 10.f);
                     battery -= localScanDrain * dt;
                 }
             } else {
@@ -2084,6 +2744,7 @@ int main() {
             updatePanelReveal(map.panels, dt);
             updatePaperReveal(map.papers, dt);
             updateBatteryReveal(map.batteries, dt);
+            updateStalkerReveal(map.stalkers, dt);
         }
 
         // 3d render
@@ -2116,6 +2777,7 @@ int main() {
             renderBatteries(map.batteries);
             renderSwitches(map.switches);
             renderSpikes(map.spikes);
+            renderStalkers(map.stalkers);
             // draw the point cloud
             cloud.render();
 
@@ -2143,6 +2805,19 @@ int main() {
                 }
             }
 
+            float nearestStalkerDist = 9999.f;
+            for (const auto& stalker : map.stalkers) {
+                if (!stalker.active) continue;
+                float dx = cam.pos.x - stalker.pos.x;
+                float dz = cam.pos.z - stalker.pos.z;
+                float d = std::sqrt(dx * dx + dz * dz);
+                nearestStalkerDist = std::min(nearestStalkerDist, d);
+            }
+            float stalkerGlitch = 0.f;
+            if (nearestStalkerDist < 6.f) {
+                stalkerGlitch = 1.f - clampf((nearestStalkerDist - 1.1f) / (6.f - 1.1f), 0.f, 1.f);
+            }
+
             // 2d render
             // SFML's 2D rendering uses its own OpenGL state; using push and pop to avoid conflicts
             window.pushGLStates();
@@ -2158,6 +2833,8 @@ int main() {
                 nearInteractable,
                 panelMenuOpen
             );
+            renderParasiteOverlay(window, parasiteOverlay, parasiteShakeMeter, parasiteMotionTime);
+            renderStalkerGlitch(window, stalkerGlitch, scanAlarmFlash);
             if (panelMenuOpen) {
                 bool switchesDone = allSwitchesDone();
                 bool switchesRequired = false;
@@ -2170,7 +2847,7 @@ int main() {
                 renderPanelOverlay(window, makeCollectedCodeMasked(), panelInput, switchesRequired, switchesDone, panelMessage);
             }
             if (state == GameState::GameOver) {
-                renderGameOverOverlay(window, menuBounds);
+                renderGameOverOverlay(window, menuBounds, gameOverReason);
             }
             window.popGLStates();
         } else {
