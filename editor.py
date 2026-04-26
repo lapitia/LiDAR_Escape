@@ -21,15 +21,16 @@ SWITCH_COLOR = "#33d1ff"
 DOOR_COLOR = "#55ff66"
 PANEL_COLOR = "#ffcc33"
 PAPER_COLOR = "#ffe78a"
+BATTERY_COLOR = "#6dff7a"
 SPIKE_PICK_RADIUS = 0.35
 POINT_PICK_RADIUS = 0.45
 SPIKE_SIZE = 8
 SWITCH_SIZE = 8
 PANEL_SIZE = 10
 PAPER_SIZE = 8
+BATTERY_SIZE = 9
 DOOR_HALF_WIDTH = 0.8
 DOOR_ATTACH_THRESHOLD = 0.8
-
 
 class MapEditor:
     def __init__(self, root):
@@ -61,6 +62,7 @@ class MapEditor:
         self.doors = []
         self.panels = []
         self.papers = []
+        self.batteries = []
         self.spawn = [0.0, 1.55, 7.0] # [x, y, z] spawn point
 
         # different states
@@ -110,7 +112,7 @@ class MapEditor:
         tool_frame.pack(fill=tk.X, padx=12, pady=8)
 
         self.tool_buttons = {}
-        for tool in ["wall", "spike", "switch", "door", "panel", "paper", "spawn", "select"]:
+        for tool in ["wall", "spike", "switch", "door", "panel", "paper", "battery", "spawn", "select"]:
             btn = tk.Button(
                 tool_frame,
                 text=tool,
@@ -157,14 +159,14 @@ class MapEditor:
         # just for comfort of double checking controls
         instructions = (
             "- draw walls with drag\n"
-            "- place spikes, switches, panels and papers with click\n"
+            "- place spikes, switches, panels, papers and batteries with click\n"
             "- place doors by clicking a wall edge\n"
             "- save levels as map-1.txt, map-2.txt and so on\n"
             "- floor and ceiling are generated automatically on save\n"
             "- door can be switch / panel / both\n\n"
             "Mouse:\n"
             "LMB drag = create wall\n"
-            "LMB click = place spike/switch/panel/paper/spawn or attach door\n"
+            "LMB click = place spike/switch/panel/paper/battery/spawn or attach door\n"
             "RMB = delete object under cursor\n"
             "MMB drag = move screen\n"
             "Wheel = zoom\n\n"
@@ -175,7 +177,8 @@ class MapEditor:
             "4 = door\n"
             "5 = panel\n"
             "6 = paper\n"
-            "7 = spawn\n"
+            "7 = battery\n"
+            "8 = spawn\n"
             "Q = select\n"
             "Delete = delete selected wall\n"
             "Ctrl+S = save\n"
@@ -188,6 +191,7 @@ class MapEditor:
             "switch x y z\n"
             "panel x y z code\n"
             "paper x y z symbol\n"
+            "battery x y z [amount]\n"
             "door x y z axis\n"
             "door x y z axis panel code [panelIndex]\n"
             "door x y z axis both code [panelIndex]\n"
@@ -225,7 +229,8 @@ class MapEditor:
         self.root.bind("<KeyPress-4>", lambda e: self.set_tool("door"))
         self.root.bind("<KeyPress-5>", lambda e: self.set_tool("panel"))
         self.root.bind("<KeyPress-6>", lambda e: self.set_tool("paper"))
-        self.root.bind("<KeyPress-7>", lambda e: self.set_tool("spawn"))
+        self.root.bind("<KeyPress-7>", lambda e: self.set_tool("battery"))
+        self.root.bind("<KeyPress-8>", lambda e: self.set_tool("spawn"))
         self.root.bind("<KeyPress-q>", lambda e: self.set_tool("select"))
         self.root.bind("<Delete>", self.delete_selected)
         self.root.bind("<Control-s>", lambda e: self.save_map())
@@ -349,6 +354,20 @@ class MapEditor:
         self.canvas.create_line(sx - 4, sy - 2, sx + 4, sy - 2, fill="#333333", width=2)
         self.canvas.create_line(sx - 4, sy + 2, sx + 4, sy + 2, fill="#333333", width=2)
 
+    def draw_battery_icon(self, sx, sy):
+        self.canvas.create_rectangle(
+            sx - BATTERY_SIZE + 1, sy - BATTERY_SIZE + 2,
+            sx + BATTERY_SIZE - 1, sy + BATTERY_SIZE + 3,
+            fill=BATTERY_COLOR, outline="white", width=2
+        )
+        self.canvas.create_rectangle(
+            sx - 3, sy - BATTERY_SIZE - 2,
+            sx + 3, sy - BATTERY_SIZE + 3,
+            fill="#d9d9d9", outline="white", width=1
+        )
+        self.canvas.create_line(sx - 4, sy, sx + 4, sy, fill="#1f3d1f", width=2)
+        self.canvas.create_line(sx, sy - 4, sx, sy + 4, fill="#1f3d1f", width=2)
+
     def draw_door_icon(self, sx, sy, axis, door_kind="switch"):
         color = DOOR_COLOR
         if door_kind == "panel":
@@ -411,6 +430,12 @@ class MapEditor:
             self.draw_paper_icon(sx, sy)
             symbol = paper.get("symbol", "?")
             self.canvas.create_text(sx + 14, sy - 12, text=f'PAPER {symbol}', fill=PAPER_COLOR, anchor="w", font=("Segoe UI", 9, "bold"))
+
+        for battery in self.batteries:
+            sx, sy = self.world_to_screen(battery["x"], battery["z"])
+            self.draw_battery_icon(sx, sy)
+            amount = battery.get("amount", 30)
+            self.canvas.create_text(sx + 14, sy - 12, text=f'BATTERY {amount}', fill=BATTERY_COLOR, anchor="w", font=("Segoe UI", 9, "bold"))
 
         for door in self.doors:
             sx, sy = self.world_to_screen(door["x"], door["z"])
@@ -596,6 +621,30 @@ class MapEditor:
             self.redraw()
             return
 
+        if self.current_tool == "battery":
+            amount_text = simpledialog.askstring(
+                "Battery amount",
+                "Enter battery charge amount.\nLeave blank for default 30.",
+                parent=self.root
+            )
+            amount = 30.0
+            if amount_text not in (None, ""):
+                try:
+                    amount = float(amount_text)
+                except ValueError:
+                    messagebox.showerror("Invalid battery amount", "Battery amount must be a number")
+                    return
+            self.batteries.append({
+                "type": "battery",
+                "x": float(wx),
+                "y": self.floor_y + 0.05,
+                "z": float(wz),
+                "amount": amount
+            })
+            self.set_status(f"Created battery at ({wx}, {self.floor_y + 0.05:.2f}, {wz})")
+            self.redraw()
+            return
+
         if self.current_tool == "door":
             placement = self.find_nearest_wall_face(wx, wz)
             if placement is None:
@@ -747,6 +796,7 @@ class MapEditor:
             (self.switches, "switch", POINT_PICK_RADIUS),
             (self.panels, "panel", POINT_PICK_RADIUS),
             (self.papers, "paper", POINT_PICK_RADIUS),
+            (self.batteries, "battery", POINT_PICK_RADIUS),
             (self.doors, "door", POINT_PICK_RADIUS),
         ]:
             idx = self.canvas_pick_point(collection, event.x, event.y, radius)
@@ -820,6 +870,7 @@ class MapEditor:
         self.doors.clear()
         self.panels.clear()
         self.papers.clear()
+        self.batteries.clear()
         self.spawn = [0.0, 1.55, 7.0]
         self.selected_index = None
         self.update_selected_info()
@@ -847,6 +898,7 @@ class MapEditor:
             self.doors.clear()
             self.panels.clear()
             self.papers.clear()
+            self.batteries.clear()
             with open(path, "r", encoding="utf-8") as f:
                 for raw in f:
                     line = raw.strip()
@@ -874,6 +926,14 @@ class MapEditor:
                         self.panels.append({"type": "panel", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3]), "code": code})
                     elif parts[0] == "paper" and len(parts) >= 5:
                         self.papers.append({"type": "paper", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3]), "symbol": parts[4]})
+                    elif parts[0] == "battery" and len(parts) >= 4:
+                        amount = 30.0
+                        if len(parts) >= 5:
+                            try:
+                                amount = float(parts[4])
+                            except ValueError:
+                                amount = 30.0
+                        self.batteries.append({"type": "battery", "x": float(parts[1]), "y": float(parts[2]), "z": float(parts[3]), "amount": amount})
                     elif parts[0] == "door" and len(parts) >= 4:
                         axis = parts[4].lower() if len(parts) >= 5 else "x"
                         if axis not in ("x", "z"):
@@ -969,6 +1029,9 @@ class MapEditor:
                         f.write(f'panel {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f}\n')
                 for obj in self.papers:
                     f.write(f'paper {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f} {obj["symbol"]}\n')
+                for obj in self.batteries:
+                    amount = obj.get("amount", 30.0)
+                    f.write(f'battery {obj["x"]:.2f} {obj["y"]:.2f} {obj["z"]:.2f} {amount:.2f}\n')
                 for obj in self.doors:
                     axis = obj.get("axis", "x")
                     requirement = obj.get("requirement", "switch")
