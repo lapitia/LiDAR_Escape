@@ -90,6 +90,25 @@ struct Switch {
     float revealTimer = 0.f;
 };
 
+enum class DoorRequirement {
+    SwitchOnly,
+    PanelOnly,
+    SwitchAndPanel
+};
+
+struct Paper {
+    Vec3 pos;
+    std::string symbol;
+    bool collected = false;
+    float revealTimer = 0.f;
+};
+
+struct Panel {
+    Vec3 pos;
+    std::string code;
+    float revealTimer = 0.f;
+};
+
 struct Door {
     Vec3 pos;
     bool open = false;
@@ -98,6 +117,10 @@ struct Door {
     float height = 2.1f;
     float thickness = 0.22f;
     char axis = 'x';
+    DoorRequirement requirement = DoorRequirement::SwitchOnly;
+    std::string code;
+    bool panelUnlocked = false;
+    int panelIndex = -1;
 };
 
 // MapLoader: handles loading a map from a text file and provides a fallback (hard‑coded map if the file is missing)
@@ -108,6 +131,8 @@ public:
     std::vector<Spike> spikes;
     std::vector<Switch> switches;
     std::vector<Door> doors;
+    std::vector<Panel> panels;
+    std::vector<Paper> papers;
     Vec3 spawn{0.f, 1.55f, 7.f}; // default spawn point (eye height ~1.55)
 
     // helper to create a WorldBox
@@ -137,12 +162,37 @@ public:
         switches.push_back(s);
     }
 
-    void addDoor(const Vec3& pos, char axis = 'x') {
+    void addPanel(const Vec3& pos, const std::string& code = "") {
+        Panel p;
+        p.pos = pos;
+        p.code = code;
+        p.revealTimer = 0.f;
+        panels.push_back(p);
+    }
+
+    void addPaper(const Vec3& pos, const std::string& symbol) {
+        Paper p;
+        p.pos = pos;
+        p.symbol = symbol;
+        p.collected = false;
+        p.revealTimer = 0.f;
+        papers.push_back(p);
+    }
+
+    void addDoor(const Vec3& pos,
+                 char axis = 'x',
+                 DoorRequirement requirement = DoorRequirement::SwitchOnly,
+                 const std::string& code = "",
+                 int panelIndex = -1) {
         Door d;
         d.pos = pos;
         d.open = false;
         d.revealTimer = 0.f;
         d.axis = (axis == 'z' || axis == 'Z') ? 'z' : 'x';
+        d.requirement = requirement;
+        d.code = code;
+        d.panelUnlocked = false;
+        d.panelIndex = panelIndex;
         doors.push_back(d);
     }
 
@@ -152,6 +202,8 @@ public:
         spikes.clear();
         switches.clear();
         doors.clear();
+        panels.clear();
+        papers.clear();
         int id = 0;
         addBox(id++, "floor",   {-8.f, -0.5f, -18.f}, {8.f, 0.f, 10.f});
         addBox(id++, "ceiling", {-8.f, 2.15f, -18.f}, {8.f, 2.45f, 10.f});
@@ -165,7 +217,15 @@ public:
 
         addSpike({0.f, 0.05f, -10.f});
         addSwitch({-5.f, 0.05f, 6.f});
-        addDoor({0.f, 0.05f, -16.2f}, 'x');
+
+        addPaper({-6.0f, 0.05f, 4.0f}, "1");
+        addPaper({-4.0f, 0.05f, -1.0f}, "2");
+        addPaper({4.0f, 0.05f, -7.5f}, "3");
+        addPaper({6.0f, 0.05f, -13.0f}, "4");
+
+        addPanel({-1.2f, 0.05f, -15.2f}, "1234");
+        addDoor({0.f, 0.05f, -16.2f}, 'x', DoorRequirement::SwitchAndPanel, "1234", 0);
+
         spawn = {0.f, 1.55f, 7.f};
     }
 
@@ -180,6 +240,8 @@ public:
         spikes.clear();
         switches.clear();
         doors.clear();
+        panels.clear();
+        papers.clear();
         std::string line;
         int id = 0;
 
@@ -205,15 +267,53 @@ public:
                 s.activated = false;
                 s.revealTimer = 0.f;
                 switches.push_back(s);
+            } else if (token == "paper") {
+                Paper p;
+                iss >> p.pos.x >> p.pos.y >> p.pos.z >> p.symbol;
+                p.collected = false;
+                p.revealTimer = 0.f;
+                papers.push_back(p);
+            } else if (token == "panel") {
+                Panel p;
+                iss >> p.pos.x >> p.pos.y >> p.pos.z;
+                if (!(iss >> p.code)) p.code.clear();
+                p.revealTimer = 0.f;
+                panels.push_back(p);
             } else if (token == "door") {
                 Door d;
                 std::string axisToken;
+                std::string reqToken;
+
                 iss >> d.pos.x >> d.pos.y >> d.pos.z;
                 if (iss >> axisToken) {
                     d.axis = (axisToken == "z" || axisToken == "Z") ? 'z' : 'x';
                 } else {
                     d.axis = 'x';
                 }
+
+                d.requirement = DoorRequirement::SwitchOnly;
+                d.code.clear();
+                d.panelUnlocked = false;
+                d.panelIndex = -1;
+
+                if (iss >> reqToken) {
+                    if (reqToken == "panel") {
+                        d.requirement = DoorRequirement::PanelOnly;
+                    } else if (reqToken == "both") {
+                        d.requirement = DoorRequirement::SwitchAndPanel;
+                    } else {
+                        d.requirement = DoorRequirement::SwitchOnly;
+                    }
+
+                    if (d.requirement != DoorRequirement::SwitchOnly) {
+                        iss >> d.code;
+                        int maybePanelIndex = -1;
+                        if (iss >> maybePanelIndex) {
+                            d.panelIndex = maybePanelIndex;
+                        }
+                    }
+                }
+
                 d.open = false;
                 d.revealTimer = 0.f;
                 doors.push_back(d);
@@ -364,11 +464,41 @@ static void updateDoorReveal(std::vector<Door>& doors, float dt) {
     }
 }
 
+static void updatePanelReveal(std::vector<Panel>& panels, float dt) {
+    for (auto& panel : panels) {
+        if (panel.revealTimer > 0.f) {
+            panel.revealTimer = std::max(0.f, panel.revealTimer - dt);
+        }
+    }
+}
+
+static void updatePaperReveal(std::vector<Paper>& papers, float dt) {
+    for (auto& paper : papers) {
+        if (paper.revealTimer > 0.f) {
+            paper.revealTimer = std::max(0.f, paper.revealTimer - dt);
+        }
+    }
+}
+
 static bool pointNearSwitch(const Vec3& p, const Switch& sw) {
     float dx = p.x - sw.pos.x;
     float dy = p.y - (sw.pos.y + 0.35f);
     float dz = p.z - sw.pos.z;
     return dx * dx + dy * dy + dz * dz <= 0.22f * 0.22f;
+}
+
+static bool pointNearPanel(const Vec3& p, const Panel& panel) {
+    float dx = p.x - panel.pos.x;
+    float dy = p.y - (panel.pos.y + 0.65f);
+    float dz = p.z - panel.pos.z;
+    return dx * dx + dy * dy + dz * dz <= 0.30f * 0.30f;
+}
+
+static bool pointNearPaper(const Vec3& p, const Paper& paper) {
+    float dx = p.x - paper.pos.x;
+    float dy = p.y - (paper.pos.y + 0.08f);
+    float dz = p.z - paper.pos.z;
+    return dx * dx + dy * dy + dz * dz <= 0.28f * 0.28f;
 }
 
 static void getDoorHalfExtents(const Door& door, float& halfX, float& halfZ) {
@@ -396,6 +526,29 @@ static bool isNearSwitchInteraction(const Vec3& pos, const Switch& sw) {
     float dz = pos.z - sw.pos.z;
     float distSq = dx * dx + dz * dz;
     return distSq <= 1.35f * 1.35f;
+}
+
+static bool isNearPanelInteraction(const Vec3& pos, const Panel& panel) {
+    float dx = pos.x - panel.pos.x;
+    float dz = pos.z - panel.pos.z;
+    float distSq = dx * dx + dz * dz;
+    return distSq <= 1.4f * 1.4f;
+}
+
+static bool isNearPaperPickup(const Vec3& pos, const Paper& paper) {
+    float dx = pos.x - paper.pos.x;
+    float dz = pos.z - paper.pos.z;
+    float distSq = dx * dx + dz * dz;
+    return distSq <= 1.1f * 1.1f;
+}
+
+static bool isNearDoorInteraction(const Vec3& pos, const Door& door) {
+    float dx = std::fabs(pos.x - door.pos.x);
+    float dz = std::fabs(pos.z - door.pos.z);
+    if (door.axis == 'z') {
+        return dx <= 1.2f && dz <= door.width * 0.5f + 0.7f;
+    }
+    return dx <= door.width * 0.5f + 0.7f && dz <= 1.2f;
 }
 
 static bool isNearOpenDoor(const Vec3& pos, const Door& door) {
@@ -515,6 +668,8 @@ public:
               std::vector<Spike>& spikes,
               std::vector<Switch>& switches,
               std::vector<Door>& doors,
+              std::vector<Panel>& panels,
+              std::vector<Paper>& papers,
               int rays, float coneDeg, float maxDist) {
         float coneRad = coneDeg * 3.1415926f / 180.f;
         float tanCone = std::tan(coneRad * 0.5f);
@@ -528,6 +683,8 @@ public:
         const float spikeRevealLife = 1.35f;
         const float switchRevealLife = 1.7f;
         const float doorRevealLife = 1.7f;
+        const float panelRevealLife = 1.7f;
+        const float paperRevealLife = 1.7f;
 
         for (int i = 0; i < rays; ++i) {
             // random sample inside a circular cone footprint
@@ -561,6 +718,19 @@ public:
                 for (auto& sw : switches) {
                     if (pointNearSwitch(p, sw)) {
                         sw.revealTimer = std::max(sw.revealTimer, switchRevealLife);
+                    }
+                }
+
+                for (auto& panel : panels) {
+                    if (pointNearPanel(p, panel)) {
+                        panel.revealTimer = std::max(panel.revealTimer, panelRevealLife);
+                    }
+                }
+
+                for (auto& paper : papers) {
+                    if (paper.collected) continue;
+                    if (pointNearPaper(p, paper)) {
+                        paper.revealTimer = std::max(paper.revealTimer, paperRevealLife);
                     }
                 }
 
@@ -720,6 +890,165 @@ static void renderSpikes(const std::vector<Spike>& spikes) {
         emitConeDots(s1, spike.height * 0.72f, spike.baseRadius * 0.62f, 12, 18, 0.007f);
         emitConeDots(s2, spike.height * 0.68f, spike.baseRadius * 0.58f, 12, 18, 0.007f);
         emitConeDots(s3, spike.height * 0.55f, spike.baseRadius * 0.48f, 10, 16, 0.006f);
+    }
+
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
+static void renderSwitches(const std::vector<Switch>& switches) {
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glPointSize(4.0f);
+    glBegin(GL_POINTS);
+
+    for (const auto& sw : switches) {
+        if (sw.revealTimer <= 0.f && !sw.activated) continue;
+        float fade = sw.activated ? 1.f : clampf(sw.revealTimer / 1.7f, 0.f, 1.f);
+        if (sw.activated) glColor4f(0.15f, 1.0f, 0.32f, 0.95f);
+        else glColor4f(0.18f, 0.75f, 1.0f, 0.45f + 0.5f * fade);
+
+        for (int i = 0; i <= 14; ++i) {
+            float y = sw.pos.y + 0.05f + 0.04f * (float)i;
+            glVertex3f(sw.pos.x, y, sw.pos.z);
+            glVertex3f(sw.pos.x + 0.035f, y, sw.pos.z + 0.01f);
+            glVertex3f(sw.pos.x - 0.035f, y, sw.pos.z - 0.01f);
+        }
+
+        for (int i = 0; i < 18; ++i) {
+            float a = 2.f * 3.1415926f * (float)i / 18.f;
+            glVertex3f(sw.pos.x + std::cos(a) * 0.11f, sw.pos.y + 0.68f, sw.pos.z + std::sin(a) * 0.11f);
+            glVertex3f(sw.pos.x + std::cos(a) * 0.08f, sw.pos.y + 0.75f, sw.pos.z + std::sin(a) * 0.08f);
+        }
+    }
+
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
+static void renderPanels(const std::vector<Panel>& panels) {
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glPointSize(4.1f);
+    glBegin(GL_POINTS);
+
+    for (const auto& panel : panels) {
+        if (panel.revealTimer <= 0.f) continue;
+
+        float fade = clampf(panel.revealTimer / 1.7f, 0.f, 1.f);
+        glColor4f(1.0f, 0.82f, 0.18f, 0.45f + 0.5f * fade);
+
+        for (int iy = 0; iy <= 18; ++iy) {
+            float y = panel.pos.y + 0.15f + 0.04f * (float)iy;
+            glVertex3f(panel.pos.x, y, panel.pos.z);
+            glVertex3f(panel.pos.x + 0.10f, y, panel.pos.z);
+            glVertex3f(panel.pos.x - 0.10f, y, panel.pos.z);
+        }
+    }
+
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
+static void renderPapers(const std::vector<Paper>& papers) {
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glPointSize(4.0f);
+    glBegin(GL_POINTS);
+
+    for (const auto& paper : papers) {
+        if (paper.collected) continue;
+        if (paper.revealTimer <= 0.f) continue;
+
+        float fade = clampf(paper.revealTimer / 1.7f, 0.f, 1.f);
+        glColor4f(1.0f, 0.95f, 0.55f, 0.4f + 0.55f * fade);
+
+        for (int i = 0; i < 18; ++i) {
+            float t = (float)i / 17.f;
+            glVertex3f(paper.pos.x - 0.10f + 0.20f * t, paper.pos.y + 0.08f, paper.pos.z - 0.07f);
+            glVertex3f(paper.pos.x - 0.10f + 0.20f * t, paper.pos.y + 0.08f, paper.pos.z + 0.07f);
+        }
+    }
+
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
+static void renderDoors(const std::vector<Door>& doors) {
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glPointSize(3.8f);
+    glBegin(GL_POINTS);
+
+    for (const auto& door : doors) {
+        if (door.revealTimer <= 0.f && !door.open) continue;
+        float fade = door.open ? 1.f : clampf(door.revealTimer / 1.7f, 0.f, 1.f);
+
+        if (door.open) {
+            glColor4f(0.16f, 1.0f, 0.25f, 0.95f);
+        } else {
+            if (door.requirement == DoorRequirement::PanelOnly)
+                glColor4f(1.0f, 0.80f, 0.18f, 0.42f + 0.48f * fade);
+            else if (door.requirement == DoorRequirement::SwitchAndPanel)
+                glColor4f(1.0f, 0.42f, 0.18f, 0.42f + 0.48f * fade);
+            else
+                glColor4f(1.0f, 0.18f, 0.18f, 0.42f + 0.48f * fade);
+        }
+
+        float y1 = door.pos.y;
+        float y2 = door.pos.y + door.height;
+
+        if (door.axis == 'z') {
+            float z1 = door.pos.z - door.width * 0.5f;
+            float z2 = door.pos.z + door.width * 0.5f;
+            float x = door.pos.x;
+
+            for (int i = 0; i <= 24; ++i) {
+                float t = (float)i / 24.f;
+                float y = y1 + (y2 - y1) * t;
+                glVertex3f(x, y, z1);
+                glVertex3f(x, y, z2);
+            }
+            for (int i = 0; i <= 20; ++i) {
+                float t = (float)i / 20.f;
+                float z = z1 + (z2 - z1) * t;
+                glVertex3f(x, y2, z);
+            }
+            if (!door.open) {
+                for (int i = 0; i <= 14; ++i) {
+                    float t = (float)i / 14.f;
+                    float y = y1 + (y2 - y1) * t;
+                    glVertex3f(x, y, door.pos.z);
+                }
+            }
+        } else {
+            float x1 = door.pos.x - door.width * 0.5f;
+            float x2 = door.pos.x + door.width * 0.5f;
+            float z = door.pos.z;
+
+            for (int i = 0; i <= 24; ++i) {
+                float t = (float)i / 24.f;
+                float y = y1 + (y2 - y1) * t;
+                glVertex3f(x1, y, z);
+                glVertex3f(x2, y, z);
+            }
+            for (int i = 0; i <= 20; ++i) {
+                float t = (float)i / 20.f;
+                float x = x1 + (x2 - x1) * t;
+                glVertex3f(x, y2, z);
+            }
+            if (!door.open) {
+                for (int i = 0; i <= 14; ++i) {
+                    float t = (float)i / 14.f;
+                    float y = y1 + (y2 - y1) * t;
+                    glVertex3f(door.pos.x, y, z);
+                }
+            }
+        }
     }
 
     glEnd();
@@ -980,107 +1309,95 @@ static void renderGameOverOverlay(sf::RenderWindow& window,
     drawButton(quitRect, "Quit", sf::Color(48, 48, 60, 235), sf::Color(76, 76, 96, 240));
 }
 
-static void renderSwitches(const std::vector<Switch>& switches) {
-    glDisable(GL_LIGHTING);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glPointSize(4.0f);
-    glBegin(GL_POINTS);
+static void renderPanelOverlay(sf::RenderWindow& window,
+                               const std::string& collectedCode,
+                               const std::string& inputCode,
+                               bool switchesRequired,
+                               bool switchesDone,
+                               const std::string& message)
+{
+    ensureFont();
+    const float W = (float)window.getSize().x;
+    const float H = (float)window.getSize().y;
 
-    for (const auto& sw : switches) {
-        if (sw.revealTimer <= 0.f && !sw.activated) continue;
-        float fade = sw.activated ? 1.f : clampf(sw.revealTimer / 1.7f, 0.f, 1.f);
-        if (sw.activated) glColor4f(0.15f, 1.0f, 0.32f, 0.95f);
-        else glColor4f(0.18f, 0.75f, 1.0f, 0.45f + 0.5f * fade);
+    sf::RectangleShape shade(sf::Vector2f(W, H));
+    shade.setFillColor(sf::Color(0, 0, 0, 180));
+    window.draw(shade);
 
-        for (int i = 0; i <= 14; ++i) {
-            float y = sw.pos.y + 0.05f + 0.04f * (float)i;
-            glVertex3f(sw.pos.x, y, sw.pos.z);
-            glVertex3f(sw.pos.x + 0.035f, y, sw.pos.z + 0.01f);
-            glVertex3f(sw.pos.x - 0.035f, y, sw.pos.z - 0.01f);
-        }
+    const float panelW = 620.f;
+    const float panelH = 360.f;
+    const float panelLeft = W * 0.5f - panelW * 0.5f;
+    const float panelTop = H * 0.5f - panelH * 0.5f;
 
-        for (int i = 0; i < 18; ++i) {
-            float a = 2.f * 3.1415926f * (float)i / 18.f;
-            glVertex3f(sw.pos.x + std::cos(a) * 0.11f, sw.pos.y + 0.68f, sw.pos.z + std::sin(a) * 0.11f);
-            glVertex3f(sw.pos.x + std::cos(a) * 0.08f, sw.pos.y + 0.75f, sw.pos.z + std::sin(a) * 0.08f);
-        }
-    }
+    sf::RectangleShape panel(sf::Vector2f(panelW, panelH));
+    panel.setPosition(panelLeft, panelTop);
+    panel.setFillColor(sf::Color(12, 12, 18, 240));
+    panel.setOutlineThickness(2.f);
+    panel.setOutlineColor(sf::Color(190, 160, 60, 220));
+    window.draw(panel);
 
-    glEnd();
-    glDisable(GL_BLEND);
-}
+    if (g_fontLoaded) {
+        drawCenteredText(window, "Door Panel", 36, W * 0.5f, panelTop + 46.f, sf::Color(245, 220, 110));
 
-static void renderDoors(const std::vector<Door>& doors) {
-    glDisable(GL_LIGHTING);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glPointSize(3.8f);
-    glBegin(GL_POINTS);
+        sf::Text line1;
+        line1.setFont(g_font);
+        line1.setCharacterSize(24);
+        line1.setFillColor(sf::Color(230, 230, 230));
+        line1.setString("Collected code: " + collectedCode);
+        line1.setPosition(panelLeft + 40.f, panelTop + 96.f);
+        window.draw(line1);
 
-    for (const auto& door : doors) {
-        if (door.revealTimer <= 0.f && !door.open) continue;
-        float fade = door.open ? 1.f : clampf(door.revealTimer / 1.7f, 0.f, 1.f);
-        if (door.open) glColor4f(0.16f, 1.0f, 0.25f, 0.95f);
-        else glColor4f(1.0f, 0.18f, 0.18f, 0.42f + 0.48f * fade);
+        sf::Text line2;
+        line2.setFont(g_font);
+        line2.setCharacterSize(24);
+        line2.setFillColor(sf::Color(255, 255, 255));
+        line2.setString("Input: " + inputCode);
+        line2.setPosition(panelLeft + 40.f, panelTop + 144.f);
+        window.draw(line2);
 
-        float y1 = door.pos.y;
-        float y2 = door.pos.y + door.height;
-
-        if (door.axis == 'z') {
-            float z1 = door.pos.z - door.width * 0.5f;
-            float z2 = door.pos.z + door.width * 0.5f;
-            float x = door.pos.x;
-
-            for (int i = 0; i <= 24; ++i) {
-                float t = (float)i / 24.f;
-                float y = y1 + (y2 - y1) * t;
-                glVertex3f(x, y, z1);
-                glVertex3f(x, y, z2);
-            }
-            for (int i = 0; i <= 20; ++i) {
-                float t = (float)i / 20.f;
-                float z = z1 + (z2 - z1) * t;
-                glVertex3f(x, y2, z);
-            }
-            if (!door.open) {
-                for (int i = 0; i <= 14; ++i) {
-                    float t = (float)i / 14.f;
-                    float y = y1 + (y2 - y1) * t;
-                    glVertex3f(x, y, door.pos.z);
-                }
-            }
+        sf::Text line3;
+        line3.setFont(g_font);
+        line3.setCharacterSize(18);
+        line3.setFillColor(switchesDone ? sf::Color(120, 255, 140) : sf::Color(255, 200, 120));
+        if (switchesRequired) {
+            line3.setString(std::string("Switches required: ") + (switchesDone ? "DONE" : "NOT YET"));
         } else {
-            float x1 = door.pos.x - door.width * 0.5f;
-            float x2 = door.pos.x + door.width * 0.5f;
-            float z = door.pos.z;
+            line3.setString("Switches required: NO");
+        }
+        line3.setPosition(panelLeft + 40.f, panelTop + 200.f);
+        window.draw(line3);
 
-            for (int i = 0; i <= 24; ++i) {
-                float t = (float)i / 24.f;
-                float y = y1 + (y2 - y1) * t;
-                glVertex3f(x1, y, z);
-                glVertex3f(x2, y, z);
-            }
-            for (int i = 0; i <= 20; ++i) {
-                float t = (float)i / 20.f;
-                float x = x1 + (x2 - x1) * t;
-                glVertex3f(x, y2, z);
-            }
-            if (!door.open) {
-                for (int i = 0; i <= 14; ++i) {
-                    float t = (float)i / 14.f;
-                    float y = y1 + (y2 - y1) * t;
-                    glVertex3f(door.pos.x, y, z);
-                }
-            }
+        sf::Text line4;
+        line4.setFont(g_font);
+        line4.setCharacterSize(16);
+        line4.setFillColor(sf::Color(170, 170, 190));
+        line4.setString("Type digits/letters, Backspace deletes, Enter confirms, Esc closes");
+        line4.setPosition(panelLeft + 40.f, panelTop + 248.f);
+        window.draw(line4);
+
+        if (!message.empty()) {
+            sf::Text msg;
+            msg.setFont(g_font);
+            msg.setCharacterSize(18);
+            msg.setFillColor(sf::Color(255, 180, 180));
+            msg.setString(message);
+            msg.setPosition(panelLeft + 40.f, panelTop + 290.f);
+            window.draw(msg);
         }
     }
-
-    glEnd();
-    glDisable(GL_BLEND);
 }
 
-static void renderBatteryHUD(sf::RenderWindow& window, float battery, bool areaScanHeld, int levelNumber, int switchesActive, int switchesTotal) {
+static void renderBatteryHUD(sf::RenderWindow& window,
+                             float battery,
+                             bool areaScanHeld,
+                             int levelNumber,
+                             int switchesActive,
+                             int switchesTotal,
+                             int papersCollected,
+                             int papersTotal,
+                             bool nearInteractable,
+                             bool panelMenuOpen)
+{
     sf::RectangleShape bg(sf::Vector2f(220.f, 20.f));
     bg.setPosition(12.f, 12.f);
     bg.setFillColor(sf::Color(30, 10, 10));
@@ -1113,10 +1430,24 @@ static void renderBatteryHUD(sf::RenderWindow& window, float battery, bool areaS
         batteryText.setFillColor(sf::Color::White);
         batteryText.setPosition(12.f, 65.f);
 
-        char batteryStr[128];
-        std::sprintf(batteryStr, "Battery: %.0f%%   Level: %d   Switches: %d/%d   E = activate", battery, levelNumber, switchesActive, switchesTotal);
+        char batteryStr[200];
+        std::sprintf(
+            batteryStr,
+            "Battery: %.0f%%   Level: %d   Switches: %d/%d   Papers: %d/%d   E = activate",
+            battery, levelNumber, switchesActive, switchesTotal, papersCollected, papersTotal
+        );
         batteryText.setString(batteryStr);
         window.draw(batteryText);
+
+        if (nearInteractable && !panelMenuOpen) {
+            sf::Text prompt;
+            prompt.setFont(g_font);
+            prompt.setCharacterSize(20);
+            prompt.setFillColor(sf::Color(255, 220, 120));
+            prompt.setString("Press E");
+            prompt.setPosition(12.f, 88.f);
+            window.draw(prompt);
+        }
     } else {
         sf::RectangleShape modeRect(sf::Vector2f(220.f, 18.f));
         modeRect.setPosition(12.f, 40.f);
@@ -1212,6 +1543,12 @@ int main() {
     bool localScanHeld = false; // true while left mouse button is pressed
     bool areaScanHeld = false;
     bool interactPressed = false;
+    bool panelMenuOpen = false;
+    int activePanelIndex = -1;
+    int activeDoorIndex = -1;
+    std::string panelInput;
+    std::string panelMessage;
+
     const float passiveRecharge = 3.5f; // % per second when not scanning
     const float localScanDrain = 18.0f; // % per second while scanning
     const float playerRadius = 0.28f; // collision sphere radius
@@ -1223,19 +1560,66 @@ int main() {
     Settings cfg;
     std::vector<sf::FloatRect> menuBounds;
 
-    auto updateDoorsFromSwitches = [&]() {
-        bool shouldOpen = map.switches.empty();
-        if (!map.switches.empty()) {
-            shouldOpen = std::all_of(map.switches.begin(), map.switches.end(), [](const Switch& sw) {
-                return sw.activated;
-            });
-        }
+    auto allSwitchesActivated = [&]() -> bool {
+        if (map.switches.empty()) return true;
+        return std::all_of(map.switches.begin(), map.switches.end(), [](const Switch& sw) {
+            return sw.activated;
+        });
+    };
+
+    auto updateDoorsState = [&]() {
+        bool switchesDone = allSwitchesActivated();
+
         for (auto& door : map.doors) {
+            bool shouldOpen = false;
+
+            if (door.requirement == DoorRequirement::SwitchOnly) {
+                shouldOpen = switchesDone;
+            } else if (door.requirement == DoorRequirement::PanelOnly) {
+                shouldOpen = door.panelUnlocked;
+            } else {
+                shouldOpen = switchesDone && door.panelUnlocked;
+            }
+
             door.open = shouldOpen;
             if (door.open) {
                 door.revealTimer = std::max(door.revealTimer, 2.4f);
             }
         }
+    };
+
+    auto activeTargetCode = [&]() -> std::string {
+        if (activeDoorIndex >= 0 && activeDoorIndex < (int)map.doors.size()) {
+            if (!map.doors[activeDoorIndex].code.empty()) {
+                return map.doors[activeDoorIndex].code;
+            }
+        }
+
+        if (activePanelIndex >= 0 && activePanelIndex < (int)map.panels.size()) {
+            if (!map.panels[activePanelIndex].code.empty()) {
+                return map.panels[activePanelIndex].code;
+            }
+        }
+
+        return "";
+    };
+
+    auto hasCollectedSymbol = [&](char c) -> bool {
+        for (const auto& paper : map.papers) {
+            if (!paper.collected || paper.symbol.empty()) continue;
+            if (paper.symbol[0] == c) return true;
+        }
+        return false;
+    };
+
+    auto buildMaskedCodeFromTarget = [&](const std::string& targetCode) -> std::string {
+        std::string shown = targetCode;
+        for (size_t i = 0; i < shown.size(); ++i) {
+            if (!hasCollectedSymbol(shown[i])) {
+                shown[i] = 'x';
+            }
+        }
+        return shown;
     };
 
     auto applySpawnState = [&]() {
@@ -1249,17 +1633,30 @@ int main() {
         localScanHeld = false;
         areaScanHeld = false;
         interactPressed = false;
+        panelMenuOpen = false;
+        activePanelIndex = -1;
+        activeDoorIndex = -1;
+        panelInput.clear();
+        panelMessage.clear();
         cloud.points.clear();
         for (auto& spike : map.spikes) spike.revealTimer = 0.f;
         for (auto& sw : map.switches) {
             sw.activated = false;
             sw.revealTimer = 0.f;
         }
+        for (auto& panel : map.panels) {
+            panel.revealTimer = 0.f;
+        }
+        for (auto& paper : map.papers) {
+            paper.collected = false;
+            paper.revealTimer = 0.f;
+        }
         for (auto& door : map.doors) {
             door.open = false;
+            door.panelUnlocked = false;
             door.revealTimer = 0.f;
         }
-        updateDoorsFromSwitches();
+        updateDoorsState();
         sf::Vector2u sz = window.getSize();
         sf::Mouse::setPosition(sf::Vector2i((int)sz.x / 2, (int)sz.y / 2), window);
     };
@@ -1356,26 +1753,77 @@ int main() {
             }
             // in-game events
             else {
-                if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape) {
-                    state = GameState::MainMenu;
-                    localScanHeld = false;
-                    areaScanHeld = false;
-                    window.setMouseCursorVisible(true);
-                    window.setMouseCursorGrabbed(false);
+                if (panelMenuOpen) {
+                    if (event.type == sf::Event::KeyPressed) {
+                        if (event.key.code == sf::Keyboard::Escape) {
+                            panelMenuOpen = false;
+                            panelInput.clear();
+                            panelMessage.clear();
+                            activePanelIndex = -1;
+                            activeDoorIndex = -1;
+                        } else if (event.key.code == sf::Keyboard::BackSpace) {
+                            if (!panelInput.empty()) panelInput.pop_back();
+                        } else if (event.key.code == sf::Keyboard::Enter) {
+                            std::string targetCode = activeTargetCode();
+                            bool switchesDone = allSwitchesActivated();
+
+                            if (activeDoorIndex >= 0 && activeDoorIndex < (int)map.doors.size()) {
+                                Door& door = map.doors[activeDoorIndex];
+
+                                if (door.requirement == DoorRequirement::SwitchAndPanel && !switchesDone) {
+                                    panelMessage = "You still need all switches first.";
+                                } else if (!targetCode.empty() && panelInput == targetCode) {
+                                    door.panelUnlocked = true;
+                                    updateDoorsState();
+                                    panelMenuOpen = false;
+                                    panelInput.clear();
+                                    panelMessage.clear();
+                                    activePanelIndex = -1;
+                                    activeDoorIndex = -1;
+                                } else {
+                                    panelMessage = "Wrong code.";
+                                }
+                            } else {
+                                panelMessage = "No linked door.";
+                            }
+                        }
+                    }
+
+                    if (event.type == sf::Event::TextEntered) {
+                        if (event.text.unicode >= 32 && event.text.unicode < 127) {
+                            char c = (char)event.text.unicode;
+                            if ((c >= '0' && c <= '9') ||
+                                (c >= 'A' && c <= 'Z') ||
+                                (c >= 'a' && c <= 'z')) {
+                                std::string targetCode = activeTargetCode();
+                                if (panelInput.size() < targetCode.size()) {
+                                    panelInput.push_back((char)std::toupper(c));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape) {
+                        state = GameState::MainMenu;
+                        localScanHeld = false;
+                        areaScanHeld = false;
+                        window.setMouseCursorVisible(true);
+                        window.setMouseCursorGrabbed(false);
+                    }
+
+                    if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left)
+                        localScanHeld = true;
+                    if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Left)
+                        localScanHeld = false;
+
+                    if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Right)
+                        areaScanHeld = true;
+                    if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Right)
+                        areaScanHeld = false;
+
+                    if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::E)
+                        interactPressed = true;
                 }
-
-                if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left)
-                    localScanHeld = true;
-                if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Left)
-                    localScanHeld = false;
-
-                if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Right)
-                    areaScanHeld = true;
-                if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Right)
-                    areaScanHeld = false;
-
-                if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::E)
-                    interactPressed = true;
             }
         }
 
@@ -1385,61 +1833,117 @@ int main() {
 
         // game logic runs only while Playing; menus need no per-frame simulation
         if (state == GameState::Playing) {
-            // mouse look: compute mouse movement from window center, update orientation
-            sf::Vector2i center((int)size.x / 2, (int)size.y / 2);
-            sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-            sf::Vector2i delta = mousePos - center;
-            sf::Mouse::setPosition(center, window);
+            if (!panelMenuOpen) {
+                // mouse look: compute mouse movement from window center, update orientation
+                sf::Vector2i center((int)size.x / 2, (int)size.y / 2);
+                sf::Vector2i mousePos = sf::Mouse::getPosition(window);
+                sf::Vector2i delta = mousePos - center;
+                sf::Mouse::setPosition(center, window);
 
-            cam.yaw += (float)delta.x * cam.mouseSens;
-            cam.pitch -= (float)delta.y * cam.mouseSens; // subtract because y increases downward
-            cam.pitch = clampf(cam.pitch, -1.50f, 1.50f); // limit to ~±85° to avoid gimbal lock
-            cam.updateFront();
+                cam.yaw += (float)delta.x * cam.mouseSens;
+                cam.pitch -= (float)delta.y * cam.mouseSens; // subtract because y increases downward
+                cam.pitch = clampf(cam.pitch, -1.50f, 1.50f); // limit to ~±85° to avoid gimbal lock
+                cam.updateFront();
 
-            // movement: compute desired move direction based on keys
-            Vec3 forward = cam.front;
-            forward.y = 0.f;  // project onto horizontal plane
-            forward = normalize(forward);
+                // movement: compute desired move direction based on keys
+                Vec3 forward = cam.front;
+                forward.y = 0.f;  // project onto horizontal plane
+                forward = normalize(forward);
 
-            Vec3 right = normalize(Vec3{-forward.z, 0.f, forward.x}); // perpendicular horizontal
-            Vec3 move{0.f, 0.f, 0.f};
+                Vec3 right = normalize(Vec3{-forward.z, 0.f, forward.x}); // perpendicular horizontal
+                Vec3 move{0.f, 0.f, 0.f};
 
-            if (sf::Keyboard::isKeyPressed(sf::Keyboard::W)) move = move + forward;
-            if (sf::Keyboard::isKeyPressed(sf::Keyboard::S)) move = move - forward;
-            if (sf::Keyboard::isKeyPressed(sf::Keyboard::A)) move = move - right;
-            if (sf::Keyboard::isKeyPressed(sf::Keyboard::D)) move = move + right;
+                if (sf::Keyboard::isKeyPressed(sf::Keyboard::W)) move = move + forward;
+                if (sf::Keyboard::isKeyPressed(sf::Keyboard::S)) move = move - forward;
+                if (sf::Keyboard::isKeyPressed(sf::Keyboard::A)) move = move - right;
+                if (sf::Keyboard::isKeyPressed(sf::Keyboard::D)) move = move + right;
 
-            if (lengthVec(move) > 0.001f) move = normalize(move) * cam.moveSpeed;
+                if (lengthVec(move) > 0.001f) move = normalize(move) * cam.moveSpeed;
 
-            // apply movement with sliding collision
-            Vec3 deltaMove = move * dt;
-            moveWithSlide(cam.pos, deltaMove, playerRadius, map.boxes);
-            // keep camera Y fixed to spawn height y
-            cam.pos.y = map.spawn.y;
+                // apply movement with sliding collision
+                Vec3 deltaMove = move * dt;
+                moveWithSlide(cam.pos, deltaMove, playerRadius, map.boxes);
+                // keep camera Y fixed to spawn height y
+                cam.pos.y = map.spawn.y;
+            }
 
             if (collidesWithAnySpike(cam.pos, playerRadius, map.spikes)) {
                 localScanHeld = false;
                 areaScanHeld = false;
                 interactPressed = false;
+                panelMenuOpen = false;
                 state = GameState::GameOver;
                 window.setMouseCursorVisible(true);
                 window.setMouseCursorGrabbed(false);
             }
 
-            if (state == GameState::Playing && interactPressed) {
+            for (auto& paper : map.papers) {
+                if (!paper.collected && isNearPaperPickup(cam.pos, paper)) {
+                    paper.collected = true;
+                    paper.revealTimer = 3.0f;
+                }
+            }
+
+            if (state == GameState::Playing && interactPressed && !panelMenuOpen) {
+                bool usedInteraction = false;
+
                 for (auto& sw : map.switches) {
                     if (!sw.activated && isNearSwitchInteraction(cam.pos, sw)) {
                         sw.activated = true;
                         sw.revealTimer = 3.0f;
-                        updateDoorsFromSwitches();
+                        updateDoorsState();
+                        usedInteraction = true;
                         break;
                     }
                 }
+
+                if (!usedInteraction) {
+                    for (int i = 0; i < (int)map.doors.size(); ++i) {
+                        Door& door = map.doors[i];
+                        if ((door.requirement == DoorRequirement::PanelOnly ||
+                             door.requirement == DoorRequirement::SwitchAndPanel) &&
+                            !door.open &&
+                            isNearDoorInteraction(cam.pos, door)) {
+                            panelMenuOpen = true;
+                            activeDoorIndex = i;
+                            activePanelIndex = door.panelIndex;
+                            panelInput.clear();
+                            panelMessage.clear();
+                            usedInteraction = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!usedInteraction) {
+                    for (int i = 0; i < (int)map.panels.size(); ++i) {
+                        if (isNearPanelInteraction(cam.pos, map.panels[i])) {
+                            panelMenuOpen = true;
+                            activePanelIndex = i;
+                            activeDoorIndex = -1;
+
+                            for (int d = 0; d < (int)map.doors.size(); ++d) {
+                                if ((map.doors[d].requirement == DoorRequirement::PanelOnly ||
+                                     map.doors[d].requirement == DoorRequirement::SwitchAndPanel) &&
+                                    (map.doors[d].panelIndex == i || map.doors[d].panelIndex < 0)) {
+                                    activeDoorIndex = d;
+                                    break;
+                                }
+                            }
+
+                            panelInput.clear();
+                            panelMessage.clear();
+                            usedInteraction = true;
+                            break;
+                        }
+                    }
+                }
+
                 interactPressed = false;
             }
 
             // game logic runs only while Playing; menus need no per-frame simulation
-            if (state == GameState::Playing) {
+            if (state == GameState::Playing && !panelMenuOpen) {
                 for (const auto& door : map.doors) {
                     if (isNearOpenDoor(cam.pos, door)) {
                         goToNextLevel();
@@ -1448,12 +1952,12 @@ int main() {
                 }
             }
 
-            bool scanning = state == GameState::Playing && (localScanHeld || areaScanHeld) && battery > 0.f;
+            bool scanning = state == GameState::Playing && !panelMenuOpen && (localScanHeld || areaScanHeld) && battery > 0.f;
             if (scanning) {
                 if (areaScanHeld) {
-                    cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, 150, 120.f, 12.f);
+                    cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, map.panels, map.papers, 150, 120.f, 12.f);
                 } else {
-                    cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, 90, 32.f, 10.f);
+                    cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, map.panels, map.papers, 90, 32.f, 10.f);
                 }
                 battery -= localScanDrain * dt;
             } else {
@@ -1465,6 +1969,8 @@ int main() {
             updateSpikeReveal(map.spikes, dt);
             updateSwitchReveal(map.switches, dt);
             updateDoorReveal(map.doors, dt);
+            updatePanelReveal(map.panels, dt);
+            updatePaperReveal(map.papers, dt);
         }
 
         // 3d render
@@ -1492,6 +1998,8 @@ int main() {
             }
 
             renderDoors(map.doors);
+            renderPanels(map.panels);
+            renderPapers(map.papers);
             renderSwitches(map.switches);
             renderSpikes(map.spikes);
             // draw the point cloud
@@ -1500,10 +2008,64 @@ int main() {
             int switchesActive = 0;
             for (const auto& sw : map.switches) if (sw.activated) ++switchesActive;
 
+            int papersCollected = 0;
+            for (const auto& paper : map.papers) if (paper.collected) ++papersCollected;
+
+            bool nearInteractable = false;
+            if (!panelMenuOpen) {
+                for (const auto& sw : map.switches) {
+                    if (!sw.activated && isNearSwitchInteraction(cam.pos, sw)) {
+                        nearInteractable = true;
+                        break;
+                    }
+                }
+                if (!nearInteractable) {
+                    for (const auto& door : map.doors) {
+                        if ((door.requirement == DoorRequirement::PanelOnly ||
+                             door.requirement == DoorRequirement::SwitchAndPanel) &&
+                            !door.open &&
+                            isNearDoorInteraction(cam.pos, door)) {
+                            nearInteractable = true;
+                            break;
+                        }
+                    }
+                }
+                if (!nearInteractable) {
+                    for (const auto& panel : map.panels) {
+                        if (isNearPanelInteraction(cam.pos, panel)) {
+                            nearInteractable = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
             // 2d render
             // SFML's 2D rendering uses its own OpenGL state; using push and pop to avoid conflicts
             window.pushGLStates();
-            renderBatteryHUD(window, battery, areaScanHeld, currentLevel, switchesActive, (int)map.switches.size());
+            renderBatteryHUD(
+                window,
+                battery,
+                areaScanHeld,
+                currentLevel,
+                switchesActive,
+                (int)map.switches.size(),
+                papersCollected,
+                (int)map.papers.size(),
+                nearInteractable,
+                panelMenuOpen
+            );
+
+            if (panelMenuOpen) {
+                std::string targetCode = activeTargetCode();
+                std::string shownCollected = buildMaskedCodeFromTarget(targetCode);
+                bool switchesRequired = false;
+                if (activeDoorIndex >= 0 && activeDoorIndex < (int)map.doors.size()) {
+                    switchesRequired = (map.doors[activeDoorIndex].requirement == DoorRequirement::SwitchAndPanel);
+                }
+                renderPanelOverlay(window, shownCollected, panelInput, switchesRequired, allSwitchesActivated(), panelMessage);
+            }
+
             if (state == GameState::GameOver) {
                 renderGameOverOverlay(window, menuBounds);
             }
