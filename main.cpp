@@ -17,6 +17,7 @@
 #include <ctime>
 #include <cstdlib>
 #include <cstdio>
+#include <map>
 
 // basic 3D vector structure and utility functions
 struct Vec3 {
@@ -101,6 +102,7 @@ enum class DoorRequirement {
 struct Paper {
     Vec3 pos;
     std::string symbol;
+    int position = -1; // which position in the code this digit belongs to (1-indexed)
     bool collected = false;
     float revealTimer = 0.f;
 };
@@ -145,7 +147,6 @@ struct Door {
 };
 
 // MapLoader: handles loading a map from a text file and provides a fallback (hard‑coded map if the file is missing)
-// one box per line: type minX minY minZ maxX maxY maxZ
 class MapLoader {
 public:
     std::vector<WorldBox> boxes;
@@ -193,10 +194,11 @@ public:
         panels.push_back(p);
     }
 
-    void addPaper(const Vec3& pos, const std::string& symbol) {
+    void addPaper(const Vec3& pos, const std::string& symbol, int position = -1) {
         Paper p;
         p.pos = pos;
         p.symbol = symbol;
+        p.position = position;
         p.collected = false;
         p.revealTimer = 0.f;
         papers.push_back(p);
@@ -263,17 +265,17 @@ public:
         addSpike({0.f, 0.05f, -10.f});
         addSwitch({-5.f, 0.05f, 6.f});
 
-        addPaper({-6.0f, 0.05f, 4.0f}, "1");
-        addPaper({-4.0f, 0.05f, -1.0f}, "2");
-        addPaper({4.0f, 0.05f, -7.5f}, "3");
-        addPaper({6.0f, 0.05f, -13.0f}, "4");
+        addPaper({-6.0f, 0.05f, 4.0f}, "5", 1);
+        addPaper({-4.0f, 0.05f, -1.0f}, "8", 2);
+        addPaper({4.0f, 0.05f, -7.5f}, "7", 3);
+        addPaper({6.0f, 0.05f, -13.0f}, "2", 4);
 
         addBattery({-6.3f, 0.05f, 1.8f}, 25.f);
         addBattery({5.2f, 0.05f, -10.8f}, 30.f);
         addStalker({4.8f, 0.05f, 2.5f});
 
-        addPanel({-1.2f, 0.05f, -15.2f}, "1234");
-        addDoor({0.f, 0.05f, -16.2f}, 'x', DoorRequirement::SwitchAndPanel, "1234", 0);
+        addPanel({-1.2f, 0.05f, -15.2f}, "5872");
+        addDoor({0.f, 0.05f, -16.2f}, 'x', DoorRequirement::SwitchAndPanel, "5872", 0);
 
         spawn = {0.f, 1.55f, 7.f};
     }
@@ -293,13 +295,50 @@ public:
         papers.clear();
         batteries.clear();
         stalkers.clear();
+
+        // First pass: collect all panel codes to map digits to positions
+        std::map<std::string, std::map<char, int>> panelCodePositions;
+        std::vector<std::pair<Panel, int>> tempPanels; // store panels with their indices
+
         std::string line;
         int id = 0;
 
-        while (std::getline(file, line)) {
-            if (line.empty() || line[0] == '#') continue; // skip empty and comment lines
+        // First pass: read all lines to collect panel codes first
+        std::vector<std::string> allLines;
+        std::ifstream file2(filename);
+        while (std::getline(file2, line)) {
+            allLines.push_back(line);
+        }
+        file2.close();
 
-            std::istringstream iss(line);
+        // First, find all panels and build position mapping
+        for (const auto& l : allLines) {
+            if (l.empty() || l[0] == '#') continue;
+            std::istringstream iss(l);
+            std::string token;
+            iss >> token;
+
+            if (token == "panel") {
+                Panel p;
+                float x, y, z;
+                iss >> x >> y >> z;
+                p.pos = {x, y, z};
+                std::string code;
+                if (iss >> code) {
+                    p.code = code;
+                }
+                // Map each digit to its position (1-indexed)
+                for (size_t i = 0; i < p.code.length(); ++i) {
+                    panelCodePositions[p.code][p.code[i]] = (int)i + 1;
+                }
+            }
+        }
+
+        // Second pass: actually load everything
+        for (const auto& l : allLines) {
+            if (l.empty() || l[0] == '#') continue;
+
+            std::istringstream iss(l);
             std::string token;
             iss >> token;
 
@@ -321,6 +360,23 @@ public:
             } else if (token == "paper") {
                 Paper p;
                 iss >> p.pos.x >> p.pos.y >> p.pos.z >> p.symbol;
+                // Try to read position if provided
+                int position = -1;
+                if (iss >> position) {
+                    p.position = position;
+                } else {
+                    // No position provided, try to determine from panel codes
+                    p.position = -1;
+                    for (const auto& panelPair : panels) {
+                        for (size_t i = 0; i < panelPair.code.length(); ++i) {
+                            if (panelPair.code[i] == p.symbol[0]) {
+                                p.position = (int)i + 1;
+                                break;
+                            }
+                        }
+                        if (p.position != -1) break;
+                    }
+                }
                 p.collected = false;
                 p.revealTimer = 0.f;
                 papers.push_back(p);
@@ -393,6 +449,21 @@ public:
                 iss >> wb.box.min.x >> wb.box.min.y >> wb.box.min.z
                     >> wb.box.max.x >> wb.box.max.y >> wb.box.max.z;
                 boxes.push_back(wb);
+            }
+        }
+
+        // Second pass for papers that still don't have positions
+        for (auto& paper : papers) {
+            if (paper.position == -1) {
+                for (const auto& panel : panels) {
+                    for (size_t i = 0; i < panel.code.length(); ++i) {
+                        if (panel.code[i] == paper.symbol[0]) {
+                            paper.position = (int)i + 1;
+                            break;
+                        }
+                    }
+                    if (paper.position != -1) break;
+                }
             }
         }
 
@@ -1668,8 +1739,6 @@ static void renderDoors(const std::vector<Door>& doors) {
 }
 
 // shared font used by both the HUD and the menu screens
-// previously a static-local inside renderBatteryHUD; promoted to file scope
-// so a single load serves all callers — ensureFont() is idempotent
 static sf::Font g_font;
 static bool g_fontLoaded = false;
 static bool g_fontAttempted = false;
@@ -1685,11 +1754,9 @@ static void ensureFont() {
     }
 }
 
-enum class GameState { MainMenu, Settings, Playing, GameOver };
+enum class GameState { MainMenu, Settings, Playing, GameOver, GameComplete };
 
 // user-configurable values with small preset arrays
-// cycleSens() and cycleFov() rotate forward through each list on every click
-// the camera is updated with the chosen values when startGame() is called
 struct Settings {
     int sensitivityIdx = 1; // 0 = Low | 1 = Medium (default) | 2 = High
     int fovIdx = 2; // maps to: 0=70 | 1=80 | 2=90 | 3=100 | 4=110
@@ -1715,7 +1782,6 @@ struct Settings {
 };
 
 // draws text centred at (cx, cy) using the shared font and returns its global bounds
-// used both to place decorative titles and to position clickable item labels
 static sf::FloatRect drawCenteredText(sf::RenderWindow& window,
                                       const std::string& str,
                                       unsigned int charSize,
@@ -1734,14 +1800,12 @@ static sf::FloatRect drawCenteredText(sf::RenderWindow& window,
     return t.getGlobalBounds();
 }
 
-// used to widen the hit-box around menu text, so small labels are easier to click
+// used to widen the hit-box around menu text
 static sf::FloatRect expand(sf::FloatRect r, float dx, float dy) {
     return {r.left - dx, r.top - dy, r.width + 2.f * dx, r.height + 2.f * dy};
 }
 
-// render the main menu screen: title, subtitle, and three items (Start / Settings / Exit)
-// fills boundsOut with one clickable hit-box per item, indexed in that order
-// the caller checks boundsOut against MouseButtonReleased events to drive transitions
+// render the main menu screen
 static void renderMainMenu(sf::RenderWindow& window,
                            std::vector<sf::FloatRect>& boundsOut)
 {
@@ -1809,7 +1873,7 @@ static void renderMainMenu(sf::RenderWindow& window,
     }
 }
 
-// render the settings screen: Sensitivity / Field of View / Back
+// render the settings screen
 static void renderSettingsMenu(sf::RenderWindow& window,
                                const Settings& cfg,
                                std::vector<sf::FloatRect>& boundsOut)
@@ -1920,6 +1984,61 @@ static void renderGameOverOverlay(sf::RenderWindow& window,
 
     drawButton(restartRect, "Restart", sf::Color(95, 24, 24, 235), sf::Color(145, 36, 36, 240));
     drawButton(quitRect, "Quit", sf::Color(48, 48, 60, 235), sf::Color(76, 76, 96, 240));
+}
+
+// render the game complete screen
+static void renderGameCompleteOverlay(sf::RenderWindow& window,
+                                      std::vector<sf::FloatRect>& boundsOut)
+{
+    ensureFont();
+    const float W = (float)window.getSize().x;
+    const float H = (float)window.getSize().y;
+
+    sf::RectangleShape shade(sf::Vector2f(W, H));
+    shade.setFillColor(sf::Color(0, 0, 0, 175));
+    window.draw(shade);
+
+    const float panelW = 560.f;
+    const float panelH = 380.f;
+    const float panelLeft = W * 0.5f - panelW * 0.5f;
+    const float panelTop = H * 0.5f - panelH * 0.5f;
+
+    sf::RectangleShape panel(sf::Vector2f(panelW, panelH));
+    panel.setPosition(panelLeft, panelTop);
+    panel.setFillColor(sf::Color(10, 10, 16, 235));
+    panel.setOutlineThickness(2.f);
+    panel.setOutlineColor(sf::Color(200, 180, 60, 220));
+    window.draw(panel);
+
+    if (g_fontLoaded) {
+        drawCenteredText(window, "Congratulations!", 44, W * 0.5f, panelTop + 72.f, sf::Color(240, 220, 120));
+        drawCenteredText(window, "You have completed the game!", 20, W * 0.5f, panelTop + 130.f, sf::Color(190, 190, 210));
+        drawCenteredText(window, "Thank you for playing.", 18, W * 0.5f, panelTop + 172.f, sf::Color(160, 160, 180));
+    }
+
+    boundsOut.resize(2);
+    const sf::Vector2i mp = sf::Mouse::getPosition(window);
+
+    sf::FloatRect mainMenuRect(panelLeft + 40.f, panelTop + 230.f, 220.f, 52.f);
+    sf::FloatRect quitRect(panelLeft + 300.f, panelTop + 230.f, 220.f, 52.f);
+    boundsOut[0] = mainMenuRect;
+    boundsOut[1] = quitRect;
+
+    auto drawButton = [&](const sf::FloatRect& r, const std::string& label, sf::Color base, sf::Color hover) {
+        bool hov = r.contains((float)mp.x, (float)mp.y);
+        sf::RectangleShape btn(sf::Vector2f(r.width, r.height));
+        btn.setPosition(r.left, r.top);
+        btn.setFillColor(hov ? hover : base);
+        btn.setOutlineThickness(2.f);
+        btn.setOutlineColor(hov ? sf::Color(255, 210, 120) : sf::Color(170, 130, 50));
+        window.draw(btn);
+        if (g_fontLoaded) {
+            drawCenteredText(window, label, 26, r.left + r.width * 0.5f, r.top + r.height * 0.5f + 4.f, sf::Color::White);
+        }
+    };
+
+    drawButton(mainMenuRect, "Main Menu", sf::Color(48, 48, 60, 235), sf::Color(76, 76, 96, 240));
+    drawButton(quitRect, "Quit", sf::Color(95, 24, 24, 235), sf::Color(145, 36, 36, 240));
 }
 
 static void renderPanelOverlay(sf::RenderWindow& window,
@@ -2096,17 +2215,15 @@ int main() {
         settings
     );
 
-    window.setVerticalSyncEnabled(true); // limit framerate to monitor refresh
+    window.setVerticalSyncEnabled(true);
     window.setMouseCursorVisible(true);
     window.setMouseCursorGrabbed(false);
 
-    //start with a clear window
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
 
-    // eable simple lighting. using a single light (LIGHT0) positioned above
     glEnable(GL_LIGHTING);
     glEnable(GL_LIGHT0);
 
@@ -2150,7 +2267,6 @@ int main() {
         currentLevel = 1;
     }
 
-    // initialize camera at the map's spawn point
     Camera cam;
     cam.pos = map.spawn;
     cam.updateFront();
@@ -2167,6 +2283,7 @@ int main() {
     bool ambienceLoaded = false;
     float footstepTimer = 0.f;
     float stalkerAudioTimer = 0.f;
+    bool playerWasMoving = false;
 
     footstepLoaded = footstepBuffer.loadFromFile("assets/audio/footstep.wav");
     if (footstepLoaded) {
@@ -2192,8 +2309,9 @@ int main() {
         std::cout << "Missing placeholder audio: assets/audio/ambience.wav";
     }
 
-    float battery = 100.f; // start with full battery
-    bool localScanHeld = false; // true while left mouse button is pressed
+    float battery = 100.f;
+    float batteryDepletedTimer = 0.f;
+    bool localScanHeld = false;
     bool areaScanHeld = false;
     bool parasiteActive = false;
     float parasiteTimer = 0.f;
@@ -2207,18 +2325,15 @@ int main() {
     int activePanelIndex = -1;
     std::string panelInput;
     std::string panelMessage;
-    std::string collectedCode;
     std::string gameOverReason = "You were caught by the spikes";
     bool scanAlarmFlash = false;
-    const float passiveRecharge = 3.5f; // % per second when not scanning
-    const float localScanDrain = 3.0f; // % per second while scanning
-    const float areaScanDrain = 4.5f; // % per second while area scanning
-    const float playerRadius = 0.28f; // collision sphere radius
+    const float passiveRecharge = 3.5f;
+    const float localScanDrain = 3.0f;
+    const float areaScanDrain = 4.5f;
+    const float playerRadius = 0.28f;
 
-    // current screen: starts on the main menu; transitions to Playing on Start
     GameState state = GameState::MainMenu;
 
-    // applied to the camera when startGame() runs
     Settings cfg;
     std::vector<sf::FloatRect> menuBounds;
 
@@ -2251,12 +2366,29 @@ int main() {
     };
 
     auto makeCollectedCodeMasked = [&]() -> std::string {
-        std::string masked;
-        for (const auto& paper : map.papers) {
-            if (paper.collected) masked += paper.symbol;
-            else masked += "_";
+        // Find the expected code length from the first panel that has a code
+        int maxPos = 0;
+        for (const auto& panel : map.panels) {
+            if ((int)panel.code.length() > maxPos) {
+                maxPos = (int)panel.code.length();
+            }
         }
-        return masked;
+
+        if (maxPos == 0) return "____";
+
+        std::string code(maxPos, '_');
+        for (const auto& paper : map.papers) {
+            if (paper.collected && paper.position >= 1 && paper.position <= maxPos) {
+                code[paper.position - 1] = paper.symbol[0];
+            }
+        }
+        // Format with spaces between digits for readability
+        std::string formatted;
+        for (size_t i = 0; i < code.length(); ++i) {
+            if (i > 0) formatted += " ";
+            formatted += code[i];
+        }
+        return formatted;
     };
 
     auto applySpawnState = [&]() {
@@ -2267,6 +2399,7 @@ int main() {
         cam.fovY = cfg.fov();
         cam.updateFront();
         battery = 100.f;
+        batteryDepletedTimer = 0.f;
         localScanHeld = false;
         areaScanHeld = false;
         parasiteActive = false;
@@ -2278,6 +2411,7 @@ int main() {
         parasiteShakeDirection = 0.f;
         footstepTimer = 0.f;
         stalkerAudioTimer = 0.f;
+        playerWasMoving = false;
         if (footstepSound.getStatus() == sf::Sound::Playing) footstepSound.stop();
         if (stalkerStepSound.getStatus() == sf::Sound::Playing) stalkerStepSound.stop();
         if (ambienceLoaded && ambienceMusic.getStatus() != sf::Music::Playing) ambienceMusic.play();
@@ -2286,7 +2420,6 @@ int main() {
         activePanelIndex = -1;
         panelInput.clear();
         panelMessage.clear();
-        collectedCode.clear();
         cloud.points.clear();
         for (auto& spike : map.spikes) spike.revealTimer = 0.f;
         for (auto& sw : map.switches) {
@@ -2327,7 +2460,7 @@ int main() {
         if (ambienceLoaded && ambienceMusic.getStatus() != sf::Music::Playing) ambienceMusic.play();
         if (!panelMenuOpen) {
             window.setMouseCursorVisible(false);
-            window.setMouseCursorGrabbed(true); // keep mouse inside window
+            window.setMouseCursorGrabbed(true);
         }
     };
 
@@ -2355,7 +2488,6 @@ int main() {
         window.setMouseCursorGrabbed(false);
     };
 
-    // resets all game-session data
     auto startGame = [&]() {
         loadLevelData(1);
         applySpawnState();
@@ -2373,9 +2505,10 @@ int main() {
             applySpawnState();
             enterPlaying();
         } else {
-            state = GameState::MainMenu;
+            state = GameState::GameComplete;
             window.setMouseCursorVisible(true);
             window.setMouseCursorGrabbed(false);
+            if (ambienceMusic.getStatus() == sf::Music::Playing) ambienceMusic.stop();
         }
     };
 
@@ -2394,7 +2527,6 @@ int main() {
                 size = window.getSize();
             }
 
-            // main menu events
             if (state == GameState::MainMenu) {
                 if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape)
                     window.close();
@@ -2410,7 +2542,6 @@ int main() {
                     }
                 }
             }
-            // settings screen events
             else if (state == GameState::Settings) {
                 if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape)
                     state = GameState::MainMenu;
@@ -2439,7 +2570,19 @@ int main() {
                     }
                 }
             }
-            // in-game events
+            else if (state == GameState::GameComplete) {
+                if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape)
+                    state = GameState::MainMenu;
+
+                if (event.type == sf::Event::MouseButtonReleased && event.mouseButton.button == sf::Mouse::Left) {
+                    sf::Vector2i mp(event.mouseButton.x, event.mouseButton.y);
+                    if (menuBounds.size() >= 1 && menuBounds[0].contains((float)mp.x, (float)mp.y)) {
+                        state = GameState::MainMenu;
+                    } else if (menuBounds.size() >= 2 && menuBounds[1].contains((float)mp.x, (float)mp.y)) {
+                        window.close();
+                    }
+                }
+            }
             else {
                 if (panelMenuOpen) {
                     if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape) {
@@ -2521,20 +2664,16 @@ int main() {
             }
         }
 
-        // delta time (cap at 0.033s ≈ 30 fps for now)
         float dt = clock.restart().asSeconds();
         dt = std::min(dt, 0.033f);
 
-        // game logic runs only while Playing; menus need no per-frame simulation
         if (state == GameState::Playing) {
             if (!panelMenuOpen) {
-                // mouse look: compute mouse movement from window center, update orientation
                 sf::Vector2i center((int)size.x / 2, (int)size.y / 2);
                 sf::Vector2i mousePos = sf::Mouse::getPosition(window);
                 sf::Vector2i delta = mousePos - center;
                 sf::Mouse::setPosition(center, window);
 
-                float shakeAmount = (float)(std::abs(delta.x) + std::abs(delta.y));
                 if (parasiteActive) {
                     float horizontal = (float)delta.x;
                     float strongMove = std::max(0.f, std::abs(horizontal) - 9.f);
@@ -2552,16 +2691,15 @@ int main() {
                 }
 
                 cam.yaw += (float)delta.x * cam.mouseSens;
-                cam.pitch -= (float)delta.y * cam.mouseSens; // subtract because y increases downward
-                cam.pitch = clampf(cam.pitch, -1.50f, 1.50f); // limit to ~±85° to avoid gimbal lock
+                cam.pitch -= (float)delta.y * cam.mouseSens;
+                cam.pitch = clampf(cam.pitch, -1.50f, 1.50f);
                 cam.updateFront();
 
-                // movement: compute desired move direction based on keys
                 Vec3 forward = cam.front;
-                forward.y = 0.f;  // project onto horizontal plane
+                forward.y = 0.f;
                 forward = normalize(forward);
 
-                Vec3 right = normalize(Vec3{-forward.z, 0.f, forward.x}); // perpendicular horizontal
+                Vec3 right = normalize(Vec3{-forward.z, 0.f, forward.x});
                 Vec3 move{0.f, 0.f, 0.f};
 
                 if (sf::Keyboard::isKeyPressed(sf::Keyboard::W)) move = move + forward;
@@ -2572,20 +2710,26 @@ int main() {
                 if (lengthVec(move) > 0.001f) move = normalize(move) * cam.moveSpeed;
 
                 bool playerMoving = lengthVec(move) > 0.001f;
+
                 if (playerMoving) {
+                    if (!playerWasMoving) {
+                        footstepTimer = 0.f;
+                    }
                     footstepTimer -= dt;
                     if (footstepLoaded && footstepTimer <= 0.f) {
                         footstepSound.play();
                         footstepTimer = 0.42f;
                     }
                 } else {
+                    if (playerWasMoving && footstepSound.getStatus() == sf::Sound::Playing) {
+                        footstepSound.stop();
+                    }
                     footstepTimer = 0.f;
                 }
+                playerWasMoving = playerMoving;
 
-                // apply movement with sliding collision
                 Vec3 deltaMove = move * dt;
                 moveWithSlide(cam.pos, deltaMove, playerRadius, map.boxes);
-                // keep camera Y fixed to spawn height y
                 cam.pos.y = map.spawn.y;
             }
 
@@ -2674,7 +2818,6 @@ int main() {
                     if (!paper.collected && isNearPaperPickup(cam.pos, paper)) {
                         paper.collected = true;
                         paper.revealTimer = 0.f;
-                        collectedCode += paper.symbol;
                     }
                 }
 
@@ -2713,7 +2856,6 @@ int main() {
                 interactPressed = false;
             }
 
-            // game logic runs only while Playing; menus need no per-frame simulation
             if (state == GameState::Playing) {
                 for (const auto& door : map.doors) {
                     if (isNearOpenDoor(cam.pos, door)) {
@@ -2723,7 +2865,14 @@ int main() {
                 }
             }
 
-            bool scanning = state == GameState::Playing && !panelMenuOpen && (localScanHeld || areaScanHeld) && battery > 0.f;
+            if (batteryDepletedTimer > 0.f) {
+                batteryDepletedTimer -= dt;
+                if (batteryDepletedTimer < 0.f) batteryDepletedTimer = 0.f;
+            }
+
+            bool scanningAllowed = battery > 0.f && batteryDepletedTimer <= 0.f;
+            bool scanning = state == GameState::Playing && !panelMenuOpen && (localScanHeld || areaScanHeld) && scanningAllowed;
+
             if (scanning) {
                 if (areaScanHeld) {
                     cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, map.panels, map.papers, map.batteries, map.stalkers, 150, 120.f, 12.f);
@@ -2732,11 +2881,15 @@ int main() {
                     cloud.scan(cam, map.boxes, map.spikes, map.switches, map.doors, map.panels, map.papers, map.batteries, map.stalkers, 90, 32.f, 10.f);
                     battery -= localScanDrain * dt;
                 }
+                if (battery <= 0.f && batteryDepletedTimer <= 0.f) {
+                    batteryDepletedTimer = 0.8f;
+                }
+                battery = clampf(battery, 0.f, 100.f);
             } else {
                 battery += passiveRecharge * dt;
+                battery = clampf(battery, 0.f, 100.f);
             }
 
-            battery = clampf(battery, 0.f, 100.f);
             cloud.update(dt);
             updateSpikeReveal(map.spikes, dt);
             updateSwitchReveal(map.switches, dt);
@@ -2747,11 +2900,9 @@ int main() {
             updateStalkerReveal(map.stalkers, dt);
         }
 
-        // 3d render
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         if (state == GameState::Playing || state == GameState::GameOver) {
-            // set up camera projection and view matrices
             glMatrixMode(GL_PROJECTION);
             glLoadIdentity();
             gluPerspective(cam.fovY, (double)size.x / (double)size.y, 0.05, 100.0);
@@ -2764,9 +2915,8 @@ int main() {
                 0.0, 1.0, 0.0
             );
 
-            // draw all world boxes
             glEnable(GL_LIGHTING);
-            glColor3f(0.025f, 0.025f, 0.03f); // very dark gray/blue
+            glColor3f(0.025f, 0.025f, 0.03f);
             for (const auto& wb : map.boxes) {
                 drawBox(wb.box);
             }
@@ -2778,7 +2928,6 @@ int main() {
             renderSwitches(map.switches);
             renderSpikes(map.spikes);
             renderStalkers(map.stalkers);
-            // draw the point cloud
             cloud.render();
 
             int switchesActive = 0;
@@ -2818,8 +2967,6 @@ int main() {
                 stalkerGlitch = 1.f - clampf((nearestStalkerDist - 1.1f) / (6.f - 1.1f), 0.f, 1.f);
             }
 
-            // 2d render
-            // SFML's 2D rendering uses its own OpenGL state; using push and pop to avoid conflicts
             window.pushGLStates();
             renderBatteryHUD(
                 window,
@@ -2851,17 +2998,16 @@ int main() {
             }
             window.popGLStates();
         } else {
-            // 2d menu render (no 3d scene behind it)
-            // SFML's 2D rendering uses its own OpenGL state; using push and pop to avoid conflicts
             window.pushGLStates();
             if (state == GameState::MainMenu)
                 renderMainMenu(window, menuBounds);
-            else
+            else if (state == GameState::Settings)
                 renderSettingsMenu(window, cfg, menuBounds);
+            else if (state == GameState::GameComplete)
+                renderGameCompleteOverlay(window, menuBounds);
             window.popGLStates();
         }
 
-        // swap buffers (display the rendered frame)
         window.display();
     }
 
